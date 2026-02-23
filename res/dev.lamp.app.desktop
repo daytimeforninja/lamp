@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Lamp
+Comment=GTD task manager backed by org-mode
+Exec=lamp
+Icon=dev.lamp.app
+Terminal=false
+Type=Application
+Categories=Office;ProjectManagement;
+Keywords=tasks;gtd;todo;org-mode;productivity;
