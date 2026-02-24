@@ -132,17 +132,17 @@ impl WhatPage {
 
     pub fn icon_name(&self) -> &'static str {
         match self {
-            Self::DailyPlanning => "daytime-sunrise-symbolic",
-            Self::Inbox => "mail-inbox-symbolic",
-            Self::AllTasks => "view-list-bullet-symbolic",
+            Self::DailyPlanning => "date-symbolic",
+            Self::Inbox => "mail-folder-inbox-symbolic",
+            Self::AllTasks => "object-select-symbolic",
             Self::NextActions => "go-next-symbolic",
             Self::Projects => "folder-symbolic",
             Self::Waiting => "appointment-soon-symbolic",
             Self::Someday => "weather-few-clouds-symbolic",
-            Self::Habits => "view-list-symbolic",
+            Self::Habits => "checkbox-checked-symbolic",
             Self::Review => "document-open-recent-symbolic",
             Self::Media => "applications-multimedia-symbolic",
-            Self::Shopping => "emoji-objects-symbolic",
+            Self::Shopping => "payment-card-symbolic",
         }
     }
 

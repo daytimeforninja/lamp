@@ -11,8 +11,7 @@ use crate::core::habit::Habit;
 use crate::core::list_item::ListItem;
 use crate::core::project::Project;
 use crate::core::task::Task;
-use crate::core::temporal::DateRange;
-use crate::message::{ActiveView, AppMode, ListKind, Message, WhatPage, WhenPage};
+use crate::message::{ActiveView, AppMode, ListKind, Message, WhatPage};
 use crate::org::convert;
 use crate::org::writer::OrgWriter;
 use crate::pages;
@@ -111,7 +110,7 @@ impl Application for Lamp {
             core,
             nav_model,
             config,
-            active_view: ActiveView::When(WhenPage::Today),
+            active_view: ActiveView::What(WhatPage::DailyPlanning),
             app_mode: AppMode::Plan,
             inbox_tasks,
             next_tasks,
@@ -184,10 +183,8 @@ impl Application for Lamp {
                 self.app_mode = mode;
             }
 
-            Message::SelectWhen(page) => {
-                self.active_view = ActiveView::When(page);
-                // Deselect sidebar
-                self.nav_model.activate(nav_bar::Id::default());
+            Message::SelectWhen(_) => {
+                // When pages removed — no-op for compatibility
             }
 
             Message::InboxInputChanged(value) => {
@@ -647,41 +644,12 @@ impl Lamp {
             note_inputs: &self.note_inputs,
         };
 
-        // When navigation bar at the top of the content area
-        let active_when = match self.active_view {
-            ActiveView::When(w) => Some(w),
-            _ => None,
+        let what = match self.active_view {
+            ActiveView::What(w) => w,
+            ActiveView::When(_) => WhatPage::DailyPlanning,
         };
-        let when_buttons = WhenPage::ALL.iter().map(|page| {
-            let btn = if active_when == Some(*page) {
-                button::suggested(page.title())
-            } else {
-                button::standard(page.title())
-            };
-            btn.on_press(Message::SelectWhen(*page)).into()
-        });
-        let when_bar: Element<'_, Message> = row()
-            .spacing(8)
-            .padding([8, 16])
-            .extend(when_buttons)
-            .into();
 
-        let content: Element<'_, Message> = match self.active_view {
-            ActiveView::When(when) => {
-                let range = match when {
-                    WhenPage::Today => DateRange::Today,
-                    WhenPage::Tomorrow => DateRange::Tomorrow,
-                    WhenPage::ThisWeek => DateRange::ThisWeek,
-                    WhenPage::Upcoming => DateRange::Upcoming,
-                };
-                pages::temporal::temporal_view(
-                    &self.all_tasks_cache,
-                    &self.habits,
-                    range,
-                    &row_ctx,
-                )
-            }
-            ActiveView::What(what) => match what {
+        let content: Element<'_, Message> = match what {
                 WhatPage::DailyPlanning => {
                     pages::daily_planning::daily_planning_view(
                         &self.day_plan,
@@ -765,12 +733,9 @@ impl Lamp {
                         &self.note_inputs,
                     )
                 }
-            },
         };
 
-        column()
-            .push(when_bar)
-            .push(content)
+        container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

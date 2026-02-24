@@ -71,6 +71,7 @@
             postInstall = ''
               install -Dm0644 res/dev.lamp.app.desktop $out/share/applications/dev.lamp.app.desktop
               install -Dm0644 res/dev.lamp.app.metainfo.xml $out/share/metainfo/dev.lamp.app.metainfo.xml
+              install -Dm0644 res/icons/hicolor/scalable/apps/dev.lamp.app.svg $out/share/icons/hicolor/scalable/apps/dev.lamp.app.svg
               wrapProgram $out/bin/lamp \
                 --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [
                   pkgs.libxkbcommon
