@@ -51,12 +51,13 @@ pub fn do_mode_view<'a>(
     let meter_text = format!("{}/{} spoons remaining ({})", remaining, budget, color_label);
     content = content.push(text::title3(meter_text));
 
-    // Tasks section
-    let confirmed_tasks: Vec<&Task> = plan
+    // Tasks section (sorted by ESC ascending, None last)
+    let mut confirmed_tasks: Vec<&Task> = plan
         .confirmed_task_ids
         .iter()
         .filter_map(|id| all_tasks.iter().find(|t| t.id == *id))
         .collect();
+    confirmed_tasks.sort_by_key(|t| t.esc.unwrap_or(u32::MAX));
 
     if !confirmed_tasks.is_empty() {
         content = content.push(text::title4("Tasks"));

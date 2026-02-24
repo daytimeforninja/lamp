@@ -147,17 +147,28 @@ impl WhatPage {
     }
 
     pub const ALL: &'static [WhatPage] = &[
+        // Planning & Review
         WhatPage::DailyPlanning,
+        WhatPage::Review,
+        // Collect
         WhatPage::Inbox,
         WhatPage::AllTasks,
+        // GTD
         WhatPage::NextActions,
         WhatPage::Projects,
         WhatPage::Waiting,
         WhatPage::Someday,
         WhatPage::Habits,
-        WhatPage::Review,
+        // Lists
         WhatPage::Media,
         WhatPage::Shopping,
+    ];
+
+    /// Pages that start a new sidebar section (divider drawn above them).
+    pub const SECTION_STARTS: &'static [WhatPage] = &[
+        WhatPage::Inbox,
+        WhatPage::NextActions,
+        WhatPage::Media,
     ];
 }
 

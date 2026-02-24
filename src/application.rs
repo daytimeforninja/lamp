@@ -81,14 +81,17 @@ impl Application for Lamp {
             log::error!("Failed to create org directory: {}", e);
         }
 
-        // Build sidebar navigation model (What pages only)
+        // Build sidebar navigation model with section dividers
         let mut nav_model = nav_bar::Model::default();
         for page in WhatPage::ALL {
-            nav_model
-                .insert()
+            let mut item = nav_model.insert();
+            item = item
                 .text(page.title())
                 .icon(icon::from_name(page.icon_name()).icon())
                 .data(*page);
+            if WhatPage::SECTION_STARTS.contains(page) {
+                item.divider_above(true);
+            }
         }
 
         // Load tasks from org files

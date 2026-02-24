@@ -29,16 +29,17 @@ impl DayPlan {
         self.date != today
     }
 
-    /// Sum ESC of ALL confirmed tasks (done or not — spent spoons don't come back).
-    pub fn committed_esc(&self, tasks: &[Task]) -> u32 {
+    /// Sum ESC of completed confirmed tasks — spent spoons.
+    pub fn spent_esc(&self, tasks: &[Task]) -> u32 {
         self.confirmed_task_ids
             .iter()
             .filter_map(|id| tasks.iter().find(|t| t.id == *id))
+            .filter(|t| t.state.is_done())
             .filter_map(|t| t.esc)
             .sum()
     }
 
     pub fn remaining_budget(&self, tasks: &[Task]) -> u32 {
-        self.spoon_budget.saturating_sub(self.committed_esc(tasks))
+        self.spoon_budget.saturating_sub(self.spent_esc(tasks))
     }
 }

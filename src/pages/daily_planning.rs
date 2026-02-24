@@ -37,11 +37,11 @@ pub fn daily_planning_view<'a>(
         .map(|dp| dp.picked_shopping_ids.clone())
         .unwrap_or_default();
 
-    let committed = day_plan
+    let spent = day_plan
         .as_ref()
-        .map(|dp| dp.committed_esc(all_tasks))
+        .map(|dp| dp.spent_esc(all_tasks))
         .unwrap_or(0);
-    let remaining = budget.saturating_sub(committed);
+    let remaining = budget.saturating_sub(spent);
 
     let mut content = column().spacing(24).padding(16).width(Length::Fill);
 
@@ -74,7 +74,7 @@ pub fn daily_planning_view<'a>(
     content = content.push(ctx_row);
 
     // Section 3: Suggestions
-    let header_text = format!("Suggested tasks ({}/{} spoons committed)", committed, budget);
+    let header_text = format!("Suggested tasks ({}/{} spoons spent)", spent, budget);
     content = content.push(text::title4(header_text));
 
     let today = chrono::Local::now().date_naive();
@@ -109,28 +109,32 @@ pub fn daily_planning_view<'a>(
     // Section 4: Today's Plan
     content = content.push(text::title4("Today's Plan"));
 
-    // Confirmed tasks
+    // Confirmed tasks (sorted by ESC ascending, None last)
     if confirmed_ids.is_empty() {
         content = content.push(text::body("No tasks confirmed yet."));
     } else {
-        let mut tasks_col = column().spacing(4);
-        for task_id in &confirmed_ids {
-            if let Some(task) = all_tasks.iter().find(|t| t.id == *task_id) {
-                let id = task.id;
-                let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
-                let done_marker = if task.state.is_done() { "[done] " } else { "" };
-                let title_text = format!("{}{}{}", done_marker, task.title, esc_text);
+        let mut confirmed_tasks: Vec<&Task> = confirmed_ids
+            .iter()
+            .filter_map(|id| all_tasks.iter().find(|t| t.id == *id))
+            .collect();
+        confirmed_tasks.sort_by_key(|t| t.esc.unwrap_or(u32::MAX));
 
-                let r = row()
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .push(text::body(title_text).width(Length::Fill))
-                    .push(
-                        button::standard("Remove")
-                            .on_press(Message::UnconfirmTask(id)),
-                    );
-                tasks_col = tasks_col.push(r);
-            }
+        let mut tasks_col = column().spacing(4);
+        for task in &confirmed_tasks {
+            let id = task.id;
+            let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
+            let done_marker = if task.state.is_done() { "[done] " } else { "" };
+            let title_text = format!("{}{}{}", done_marker, task.title, esc_text);
+
+            let r = row()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .push(text::body(title_text).width(Length::Fill))
+                .push(
+                    button::standard("Remove")
+                        .on_press(Message::UnconfirmTask(id)),
+                );
+            tasks_col = tasks_col.push(r);
         }
         content = content.push(tasks_col);
     }
