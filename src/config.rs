@@ -65,6 +65,18 @@ impl LampConfig {
         self.org_directory.join("archive.org")
     }
 
+    pub fn media_path(&self) -> PathBuf {
+        self.org_directory.join("media.org")
+    }
+
+    pub fn shopping_path(&self) -> PathBuf {
+        self.org_directory.join("shopping.org")
+    }
+
+    pub fn dayplan_path(&self) -> PathBuf {
+        self.org_directory.join("dayplan.org")
+    }
+
     /// Ensure the org directory and files exist.
     pub fn ensure_files(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.org_directory)?;
@@ -86,6 +98,20 @@ impl LampConfig {
                     "#+TITLE: {}\n#+TODO: TODO NEXT WAITING SOMEDAY | DONE CANCELLED\n\n",
                     title
                 );
+                std::fs::write(&path, content)?;
+            }
+        }
+
+        // List files (no #+TODO line — these aren't tasks)
+        let list_files = [
+            ("media.org", "Media Recommendations"),
+            ("shopping.org", "Shopping"),
+        ];
+
+        for (filename, title) in &list_files {
+            let path = self.org_directory.join(filename);
+            if !path.exists() {
+                let content = format!("#+TITLE: {}\n\n", title);
                 std::fs::write(&path, content)?;
             }
         }

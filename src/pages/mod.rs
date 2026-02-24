@@ -1,6 +1,9 @@
 pub mod all_tasks;
+pub mod daily_planning;
+pub mod do_mode;
 pub mod habits;
 pub mod inbox;
+pub mod list;
 pub mod next_actions;
 pub mod projects;
 pub mod review;

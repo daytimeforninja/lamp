@@ -88,6 +88,7 @@ pub struct Task {
     pub completed: Option<NaiveDateTime>,
     pub project: Option<String>,
     pub waiting_for: Option<String>,
+    pub esc: Option<u32>,
 }
 
 impl Task {
@@ -106,6 +107,7 @@ impl Task {
             completed: None,
             project: None,
             waiting_for: None,
+            esc: None,
         }
     }
 

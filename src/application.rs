@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cosmic::app::{Core, Task as CosmicTask, context_drawer};
 use cosmic::iced::{Alignment, Length};
@@ -6,11 +6,13 @@ use cosmic::widget::{button, column, container, icon, nav_bar, row, scrollable, 
 use cosmic::{Application, Element, executor};
 
 use crate::config::LampConfig;
+use crate::core::day_plan::DayPlan;
 use crate::core::habit::Habit;
+use crate::core::list_item::ListItem;
 use crate::core::project::Project;
 use crate::core::task::Task;
 use crate::core::temporal::DateRange;
-use crate::message::{ActiveView, Message, WhatPage, WhenPage};
+use crate::message::{ActiveView, AppMode, ListKind, Message, WhatPage, WhenPage};
 use crate::org::convert;
 use crate::org::writer::OrgWriter;
 use crate::pages;
@@ -20,6 +22,7 @@ pub struct Lamp {
     nav_model: nav_bar::Model,
     config: LampConfig,
     active_view: ActiveView,
+    app_mode: AppMode,
 
     // Data
     inbox_tasks: Vec<Task>,
@@ -32,12 +35,24 @@ pub struct Lamp {
     // Cached for today view (rebuilt on data changes)
     all_tasks_cache: Vec<Task>,
 
+    // List items
+    media_items: Vec<ListItem>,
+    shopping_items: Vec<ListItem>,
+
+    // Day plan
+    day_plan: Option<DayPlan>,
+    rejected_suggestions: HashSet<uuid::Uuid>,
+
     // UI state
     inbox_input: String,
     project_input: String,
     project_task_inputs: HashMap<String, String>,
     habit_input: String,
+    media_input: String,
+    shopping_input: String,
     settings_context_input: String,
+    expanded_task: Option<uuid::Uuid>,
+    note_inputs: HashMap<uuid::Uuid, String>,
 }
 
 pub struct Flags {
@@ -73,7 +88,7 @@ impl Application for Lamp {
             nav_model
                 .insert()
                 .text(page.title())
-                .icon(icon::from_name(page.icon_name()).size(16).icon())
+                .icon(icon::from_name(page.icon_name()).icon())
                 .data(*page);
         }
 
@@ -84,24 +99,40 @@ impl Application for Lamp {
         let someday_tasks = load_tasks(&config.someday_path());
         let projects = load_projects(&config.projects_path());
         let habits = load_habits(&config.habits_path());
+        let media_items = load_list_items(&config.media_path());
+        let shopping_items = load_list_items(&config.shopping_path());
+
+        // Load day plan, clear if stale
+        let today = chrono::Local::now().date_naive();
+        let day_plan = load_day_plan(&config.dayplan_path())
+            .filter(|dp| !dp.is_stale(today));
 
         let mut app = Self {
             core,
             nav_model,
             config,
             active_view: ActiveView::When(WhenPage::Today),
+            app_mode: AppMode::Plan,
             inbox_tasks,
             next_tasks,
             waiting_tasks,
             someday_tasks,
             projects,
             habits,
+            media_items,
+            shopping_items,
+            day_plan,
+            rejected_suggestions: HashSet::new(),
             all_tasks_cache: Vec::new(),
             inbox_input: String::new(),
             project_input: String::new(),
             project_task_inputs: HashMap::new(),
             habit_input: String::new(),
+            media_input: String::new(),
+            shopping_input: String::new(),
             settings_context_input: String::new(),
+            expanded_task: None,
+            note_inputs: HashMap::new(),
         };
         app.rebuild_cache();
 
@@ -109,7 +140,10 @@ impl Application for Lamp {
     }
 
     fn nav_model(&self) -> Option<&nav_bar::Model> {
-        Some(&self.nav_model)
+        match self.app_mode {
+            AppMode::Plan => Some(&self.nav_model),
+            AppMode::Do => None,
+        }
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> CosmicTask<Message> {
@@ -121,11 +155,35 @@ impl Application for Lamp {
     }
 
     fn header_center(&self) -> Vec<Element<'_, Message>> {
-        Vec::new()
+        let plan_btn = if self.app_mode == AppMode::Plan {
+            button::suggested("Plan")
+        } else {
+            button::standard("Plan")
+        }
+        .on_press(Message::SetMode(AppMode::Plan));
+
+        let do_btn = if self.app_mode == AppMode::Do {
+            button::suggested("Do")
+        } else {
+            button::standard("Do")
+        }
+        .on_press(Message::SetMode(AppMode::Do));
+
+        vec![
+            row()
+                .spacing(4)
+                .push(plan_btn)
+                .push(do_btn)
+                .into(),
+        ]
     }
 
     fn update(&mut self, message: Message) -> CosmicTask<Message> {
         match message {
+            Message::SetMode(mode) => {
+                self.app_mode = mode;
+            }
+
             Message::SelectWhen(page) => {
                 self.active_view = ActiveView::When(page);
                 // Deselect sidebar
@@ -162,6 +220,12 @@ impl Application for Lamp {
 
             Message::SetTaskPriority(id, priority) => {
                 self.set_task_priority(id, priority);
+            }
+
+            Message::SetTaskEsc(id, esc) => {
+                self.modify_task(id, |task| {
+                    task.esc = esc;
+                });
             }
 
             Message::DeleteTask(id) => {
@@ -327,6 +391,180 @@ impl Application for Lamp {
                 }
             }
 
+            Message::ToggleTaskExpand(id) => {
+                if self.expanded_task == Some(id) {
+                    self.expanded_task = None;
+                } else {
+                    self.expanded_task = Some(id);
+                }
+            }
+
+            Message::NoteInputChanged(id, value) => {
+                self.note_inputs.insert(id, value);
+            }
+
+            Message::AppendNote(id) => {
+                let input = self.note_inputs.get(&id).cloned().unwrap_or_default();
+                let text = input.trim().to_string();
+                if !text.is_empty() {
+                    let now = chrono::Local::now();
+                    let stamp = now.format("[%Y-%m-%d %a %H:%M]").to_string();
+                    let line = format!("{} {}", stamp, text);
+
+                    // Try list items first, then fall through to tasks
+                    if let Some(item) = self.media_items.iter_mut().find(|i| i.id == id) {
+                        if item.notes.is_empty() {
+                            item.notes = line;
+                        } else {
+                            item.notes.push('\n');
+                            item.notes.push_str(&line);
+                        }
+                        self.note_inputs.insert(id, String::new());
+                        self.save_media();
+                    } else if let Some(item) = self.shopping_items.iter_mut().find(|i| i.id == id) {
+                        if item.notes.is_empty() {
+                            item.notes = line;
+                        } else {
+                            item.notes.push('\n');
+                            item.notes.push_str(&line);
+                        }
+                        self.note_inputs.insert(id, String::new());
+                        self.save_shopping();
+                    } else {
+                        self.modify_task(id, |task| {
+                            if task.notes.is_empty() {
+                                task.notes = line;
+                            } else {
+                                task.notes.push('\n');
+                                task.notes.push_str(&line);
+                            }
+                        });
+                        self.note_inputs.insert(id, String::new());
+                    }
+                }
+            }
+
+            Message::ListInputChanged(kind, value) => {
+                match kind {
+                    ListKind::Media => self.media_input = value,
+                    ListKind::Shopping => self.shopping_input = value,
+                }
+            }
+
+            Message::ListSubmit(kind) => {
+                match kind {
+                    ListKind::Media => {
+                        let title = self.media_input.trim().to_string();
+                        if !title.is_empty() {
+                            self.media_items.push(ListItem::new(title));
+                            self.media_input.clear();
+                            self.save_media();
+                        }
+                    }
+                    ListKind::Shopping => {
+                        let title = self.shopping_input.trim().to_string();
+                        if !title.is_empty() {
+                            self.shopping_items.push(ListItem::new(title));
+                            self.shopping_input.clear();
+                            self.save_shopping();
+                        }
+                    }
+                }
+            }
+
+            Message::DeleteListItem(kind, id) => {
+                match kind {
+                    ListKind::Media => {
+                        self.media_items.retain(|i| i.id != id);
+                        self.save_media();
+                    }
+                    ListKind::Shopping => {
+                        self.shopping_items.retain(|i| i.id != id);
+                        self.save_shopping();
+                    }
+                }
+            }
+
+            // Daily Planning messages
+            Message::SetSpoonBudget(budget) => {
+                let plan = self.ensure_day_plan();
+                plan.spoon_budget = budget;
+                self.save_day_plan();
+            }
+
+            Message::TogglePlanContext(ref ctx) => {
+                let plan = self.ensure_day_plan();
+                if let Some(pos) = plan.active_contexts.iter().position(|c| c == ctx) {
+                    plan.active_contexts.remove(pos);
+                } else {
+                    plan.active_contexts.push(ctx.clone());
+                }
+                self.save_day_plan();
+            }
+
+            Message::ConfirmTask(id) => {
+                let plan = self.ensure_day_plan();
+                if !plan.confirmed_task_ids.contains(&id) {
+                    plan.confirmed_task_ids.push(id);
+                }
+                self.save_day_plan();
+            }
+
+            Message::UnconfirmTask(id) => {
+                if let Some(ref mut plan) = self.day_plan {
+                    plan.confirmed_task_ids.retain(|i| *i != id);
+                    self.save_day_plan();
+                }
+            }
+
+            Message::RejectSuggestion(id) => {
+                self.rejected_suggestions.insert(id);
+            }
+
+            Message::PickMediaItem(id) => {
+                let plan = self.ensure_day_plan();
+                if !plan.picked_media_ids.contains(&id) {
+                    plan.picked_media_ids.push(id);
+                }
+                self.save_day_plan();
+            }
+
+            Message::UnpickMediaItem(id) => {
+                if let Some(ref mut plan) = self.day_plan {
+                    plan.picked_media_ids.retain(|i| *i != id);
+                    self.save_day_plan();
+                }
+            }
+
+            Message::PickShoppingItem(id) => {
+                let plan = self.ensure_day_plan();
+                if !plan.picked_shopping_ids.contains(&id) {
+                    plan.picked_shopping_ids.push(id);
+                }
+                self.save_day_plan();
+            }
+
+            Message::UnpickShoppingItem(id) => {
+                if let Some(ref mut plan) = self.day_plan {
+                    plan.picked_shopping_ids.retain(|i| *i != id);
+                    self.save_day_plan();
+                }
+            }
+
+            // Do mode messages
+            Message::DoMarkDone(id) => {
+                self.toggle_done(id);
+            }
+
+            Message::DoMarkListItemDone(id) => {
+                // Remove from today's picked lists (item stays in master list)
+                if let Some(ref mut plan) = self.day_plan {
+                    plan.picked_media_ids.retain(|i| *i != id);
+                    plan.picked_shopping_ids.retain(|i| *i != id);
+                    self.save_day_plan();
+                }
+            }
+
             Message::Save => {
                 self.save_all();
             }
@@ -339,7 +577,7 @@ impl Application for Lamp {
 
     fn header_end(&self) -> Vec<Element<'_, Message>> {
         vec![
-            button::icon(icon::from_name("emblem-system-symbolic").size(16))
+            button::icon(icon::from_name("emblem-system-symbolic"))
                 .on_press(Message::ToggleSettings)
                 .into(),
         ]
@@ -362,7 +600,7 @@ impl Application for Lamp {
                     .align_y(Alignment::Center)
                     .push(text::body(ctx.clone()).width(Length::Fill))
                     .push(
-                        button::icon(icon::from_name("edit-delete-symbolic").size(16))
+                        button::icon(icon::from_name("edit-delete-symbolic"))
                             .on_press(Message::SettingsRemoveContext(idx)),
                     ),
             );
@@ -379,7 +617,7 @@ impl Application for Lamp {
                 .spacing(8)
                 .push(input)
                 .push(
-                    button::icon(icon::from_name("list-add-symbolic").size(16))
+                    button::icon(icon::from_name("list-add-symbolic"))
                         .on_press(Message::SettingsAddContext),
                 ),
         );
@@ -392,10 +630,21 @@ impl Application for Lamp {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        match self.app_mode {
+            AppMode::Plan => self.plan_view(),
+            AppMode::Do => self.do_view(),
+        }
+    }
+}
+
+impl Lamp {
+    fn plan_view(&self) -> Element<'_, Message> {
         let project_names: Vec<String> = self.projects.iter().map(|p| p.name.clone()).collect();
         let row_ctx = crate::components::task_row::TaskRowCtx {
             contexts: &self.config.contexts,
             project_names: &project_names,
+            expanded_task: self.expanded_task,
+            note_inputs: &self.note_inputs,
         };
 
         // When navigation bar at the top of the content area
@@ -433,6 +682,16 @@ impl Application for Lamp {
                 )
             }
             ActiveView::What(what) => match what {
+                WhatPage::DailyPlanning => {
+                    pages::daily_planning::daily_planning_view(
+                        &self.day_plan,
+                        &self.all_tasks_cache,
+                        &self.media_items,
+                        &self.shopping_items,
+                        &self.config.contexts,
+                        &self.rejected_suggestions,
+                    )
+                }
                 WhatPage::Inbox => {
                     pages::inbox::inbox_view(
                         &self.inbox_tasks,
@@ -484,6 +743,28 @@ impl Application for Lamp {
                         &self.habits,
                     )
                 }
+                WhatPage::Media => {
+                    pages::list::list_view(
+                        &self.media_items,
+                        &self.media_input,
+                        crate::fl!("media-placeholder"),
+                        crate::fl!("media-empty"),
+                        ListKind::Media,
+                        self.expanded_task,
+                        &self.note_inputs,
+                    )
+                }
+                WhatPage::Shopping => {
+                    pages::list::list_view(
+                        &self.shopping_items,
+                        &self.shopping_input,
+                        crate::fl!("shopping-placeholder"),
+                        crate::fl!("shopping-empty"),
+                        ListKind::Shopping,
+                        self.expanded_task,
+                        &self.note_inputs,
+                    )
+                }
             },
         };
 
@@ -494,9 +775,17 @@ impl Application for Lamp {
             .height(Length::Fill)
             .into()
     }
-}
 
-impl Lamp {
+    fn do_view(&self) -> Element<'_, Message> {
+        pages::do_mode::do_mode_view(
+            &self.day_plan,
+            &self.all_tasks_cache,
+            &self.habits,
+            &self.media_items,
+            &self.shopping_items,
+        )
+    }
+
     fn rebuild_cache(&mut self) {
         self.all_tasks_cache = self.all_active_tasks();
     }
@@ -650,6 +939,24 @@ impl Lamp {
         None
     }
 
+    fn ensure_day_plan(&mut self) -> &mut DayPlan {
+        let today = chrono::Local::now().date_naive();
+        if self.day_plan.as_ref().is_none_or(|dp| dp.is_stale(today)) {
+            self.day_plan = Some(DayPlan::new(today));
+            self.rejected_suggestions.clear();
+        }
+        self.day_plan.as_mut().unwrap()
+    }
+
+    fn save_day_plan(&self) {
+        if let Some(ref plan) = self.day_plan {
+            let content = OrgWriter::write_day_plan(plan);
+            if let Err(e) = std::fs::write(self.config.dayplan_path(), &content) {
+                log::error!("Failed to save day plan: {}", e);
+            }
+        }
+    }
+
     fn save_inbox(&mut self) {
         let content = OrgWriter::write_file("Inbox", &self.inbox_tasks);
         if let Err(e) = std::fs::write(self.config.inbox_path(), &content) {
@@ -681,6 +988,20 @@ impl Lamp {
         let content = OrgWriter::write_projects_file(&self.projects);
         if let Err(e) = std::fs::write(self.config.projects_path(), &content) {
             log::error!("Failed to save projects: {}", e);
+        }
+    }
+
+    fn save_media(&self) {
+        let content = OrgWriter::write_list_items_file("Media Recommendations", &self.media_items);
+        if let Err(e) = std::fs::write(self.config.media_path(), &content) {
+            log::error!("Failed to save media: {}", e);
+        }
+    }
+
+    fn save_shopping(&self) {
+        let content = OrgWriter::write_list_items_file("Shopping", &self.shopping_items);
+        if let Err(e) = std::fs::write(self.config.shopping_path(), &content) {
+            log::error!("Failed to save shopping: {}", e);
         }
     }
 
@@ -717,4 +1038,17 @@ fn load_projects(path: &std::path::Path) -> Vec<crate::core::project::Project> {
         Ok(content) => convert::parse_projects(&content),
         Err(_) => Vec::new(),
     }
+}
+
+fn load_list_items(path: &std::path::Path) -> Vec<ListItem> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => convert::parse_list_items(&content),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn load_day_plan(path: &std::path::Path) -> Option<DayPlan> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| convert::parse_day_plan(&content))
 }

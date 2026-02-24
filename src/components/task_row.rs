@@ -1,13 +1,30 @@
+use std::collections::HashMap;
+
 use chrono::{Duration, Local, NaiveDate, Datelike, Weekday};
+use uuid::Uuid;
 
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, checkbox, column, container, dropdown, icon, row, text};
+use cosmic::widget::{button, checkbox, column, container, dropdown, icon, row, text, text_input};
 use cosmic::{Element, theme};
 
 use crate::core::task::{Priority, Task, TaskState};
 use crate::message::Message;
 
 const STATE_LABELS: &[&str] = &["TODO", "NEXT", "WAIT", "SOME"];
+const ESC_LABELS: &[&str] = &["-", "5", "10", "15", "20", "25", "30", "40", "50", "75", "100"];
+const ESC_VALUES: &[Option<u32>] = &[
+    None,
+    Some(5),
+    Some(10),
+    Some(15),
+    Some(20),
+    Some(25),
+    Some(30),
+    Some(40),
+    Some(50),
+    Some(75),
+    Some(100),
+];
 
 // Column widths for consistent alignment
 const COL_CHECK: f32 = 28.0;
@@ -16,12 +33,15 @@ const COL_PRI: f32 = 32.0;
 const COL_CTX: f32 = 120.0;
 const COL_PROJECT: f32 = 100.0;
 const COL_DATE: f32 = 96.0;
+const COL_ESC: f32 = 48.0;
 const COL_DELETE: f32 = 28.0;
 
 /// Context passed to task grid.
 pub struct TaskRowCtx<'a> {
     pub contexts: &'a [String],
     pub project_names: &'a [String],
+    pub expanded_task: Option<Uuid>,
+    pub note_inputs: &'a HashMap<Uuid, String>,
 }
 
 // --- Date picker presets ---
@@ -135,6 +155,7 @@ fn header_row(has_projects: bool) -> Element<'static, Message> {
     }
 
     r = r
+        .push(col(COL_ESC, text::caption("ESC")))
         .push(col(COL_DATE, text::caption("Sched")))
         .push(col(COL_DATE, text::caption("Due")))
         .push(col(COL_DELETE, text::caption("")));
@@ -209,8 +230,13 @@ fn task_row(
             .on_press(Message::SetTaskPriority(id, next_priority)),
     );
 
-    // 4. Title
-    let title: Element<'static, Message> = col_fill(text::body(task.title.clone()));
+    // 4. Title (clickable to expand/collapse notes)
+    let title: Element<'static, Message> = col_fill(
+        button::custom(text::body(task.title.clone()))
+            .padding([0, 0])
+            .class(theme::Button::Text)
+            .on_press(Message::ToggleTaskExpand(id)),
+    );
 
     // 5. Context (tags + add dropdown)
     let mut ctx_items: Vec<Element<'static, Message>> = Vec::new();
@@ -269,19 +295,63 @@ fn task_row(
         ));
     }
 
-    // 8. Scheduled date picker
+    // 8. ESC dropdown
+    let esc_labels: Vec<String> = ESC_LABELS.iter().map(|s| s.to_string()).collect();
+    let esc_selected: Option<usize> = task.esc.and_then(|v| {
+        ESC_VALUES.iter().position(|ev| *ev == Some(v))
+    }).or(Some(0)); // Default to "-" when None
+    let esc_selected = if task.esc.is_none() { Some(0) } else { esc_selected };
+    r = r.push(col(COL_ESC,
+        dropdown(esc_labels, esc_selected, move |idx| {
+            Message::SetTaskEsc(id, ESC_VALUES[idx])
+        })
+        .width(Length::Shrink),
+    ));
+
+    // 9. Scheduled date picker
     let scheduled = task.scheduled;
     r = r.push(col(COL_DATE, date_dropdown(scheduled, move |d| Message::SetScheduled(id, d))));
 
-    // 9. Deadline date picker
+    // 10. Deadline date picker
     let deadline = task.deadline;
     r = r.push(col(COL_DATE, date_dropdown(deadline, move |d| Message::SetDeadline(id, d))));
 
-    // 10. Delete button
+    // 11. Delete button
     r = r.push(col(COL_DELETE,
-        button::icon(icon::from_name("edit-delete-symbolic").size(16))
+        button::icon(icon::from_name("edit-delete-symbolic"))
             .on_press(Message::DeleteTask(id)),
     ));
 
-    r.width(Length::Fill).into()
+    let data_row: Element<'static, Message> = r.width(Length::Fill).into();
+
+    // If this task is expanded, show notes panel below the row
+    if ctx.expanded_task == Some(id) {
+        let notes_text = task.notes.clone();
+        let input_value = ctx.note_inputs.get(&id).cloned().unwrap_or_default();
+
+        let mut notes_col = column().spacing(4).padding([4, 0, 4, 36]);
+
+        if !notes_text.is_empty() {
+            notes_col = notes_col.push(
+                container(text::body(notes_text))
+                    .padding([4, 8])
+                    .width(Length::Fill),
+            );
+        }
+
+        let note_input = text_input::text_input("Add a note...", input_value)
+            .on_input(move |v| Message::NoteInputChanged(id, v))
+            .on_submit(move |_| Message::AppendNote(id))
+            .width(Length::Fill);
+
+        notes_col = notes_col.push(note_input);
+
+        column()
+            .push(data_row)
+            .push(notes_col)
+            .width(Length::Fill)
+            .into()
+    } else {
+        data_row
+    }
 }

@@ -30,7 +30,7 @@ pub fn projects_view<'a>(
             .align_y(Alignment::Center)
             .push(input)
             .push(
-                button::icon(icon::from_name("list-add-symbolic").size(16))
+                button::icon(icon::from_name("list-add-symbolic"))
                     .on_press(Message::ProjectSubmit),
             ),
     );
@@ -53,7 +53,7 @@ pub fn projects_view<'a>(
                 .align_y(Alignment::Center)
                 .push(text::title4(header_text).width(Length::Fill))
                 .push(
-                    button::icon(icon::from_name("edit-delete-symbolic").size(16))
+                    button::icon(icon::from_name("edit-delete-symbolic"))
                         .on_press(Message::DeleteProject(project.name.clone())),
                 );
 
@@ -90,7 +90,7 @@ pub fn projects_view<'a>(
                     .align_y(Alignment::Center)
                     .push(task_input)
                     .push(
-                        button::icon(icon::from_name("list-add-symbolic").size(16))
+                        button::icon(icon::from_name("list-add-symbolic"))
                             .on_press(Message::AddTaskToProject(pname3)),
                     ),
             );

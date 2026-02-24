@@ -22,7 +22,7 @@ pub fn habits_view<'a>(habits: &[Habit], habit_input: &str) -> Element<'a, Messa
             .align_y(Alignment::Center)
             .push(input)
             .push(
-                button::icon(icon::from_name("list-add-symbolic").size(16))
+                button::icon(icon::from_name("list-add-symbolic"))
                     .on_press(Message::HabitSubmit),
             ),
     );
@@ -36,7 +36,7 @@ pub fn habits_view<'a>(habits: &[Habit], habit_input: &str) -> Element<'a, Messa
         );
     } else {
         for habit in habits {
-            let delete_btn = button::icon(icon::from_name("edit-delete-symbolic").size(16))
+            let delete_btn = button::icon(icon::from_name("edit-delete-symbolic"))
                 .on_press(Message::DeleteHabit(habit.task.id));
 
             let habit_row = row()

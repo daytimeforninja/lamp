@@ -1,4 +1,9 @@
+use chrono::NaiveDate;
+use uuid::Uuid;
+
+use crate::core::day_plan::DayPlan;
 use crate::core::habit::Habit;
+use crate::core::list_item::ListItem;
 use crate::core::project::Project;
 use crate::core::task::Task;
 
@@ -89,6 +94,33 @@ pub fn extract_projects(headings: &[ParsedHeading]) -> Vec<Project> {
     projects
 }
 
+/// Convert a ParsedHeading into a ListItem (no state, priority, dates).
+fn heading_to_list_item(heading: &ParsedHeading) -> ListItem {
+    let id = OrgParser::get_property(&heading.properties, "ID")
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4);
+
+    let created = OrgParser::get_property(&heading.properties, "CREATED")
+        .and_then(|s| {
+            let s = s.trim_matches(|c| c == '[' || c == ']');
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %a %H:%M").ok()
+        })
+        .unwrap_or_else(|| chrono::Local::now().naive_local());
+
+    ListItem {
+        id,
+        title: heading.title.clone(),
+        notes: heading.notes.clone(),
+        created,
+    }
+}
+
+/// Parse an org file and return list items (headings without state).
+pub fn parse_list_items(input: &str) -> Vec<ListItem> {
+    let headings = OrgParser::parse(input);
+    headings.iter().map(heading_to_list_item).collect()
+}
+
 /// Parse an org file and return tasks.
 pub fn parse_tasks(input: &str) -> Vec<Task> {
     let headings = OrgParser::parse(input);
@@ -105,4 +137,75 @@ pub fn parse_habits(input: &str) -> Vec<Habit> {
 pub fn parse_projects(input: &str) -> Vec<Project> {
     let headings = OrgParser::parse(input);
     extract_projects(&headings)
+}
+
+/// Parse a dayplan.org file into a DayPlan.
+pub fn parse_day_plan(input: &str) -> Option<DayPlan> {
+    let mut date: Option<NaiveDate> = None;
+    let mut spoon_budget: u32 = 50;
+
+    // Parse preamble keywords
+    for line in input.lines() {
+        if line.starts_with('*') {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("#+DATE:") {
+            date = NaiveDate::parse_from_str(rest.trim(), "%Y-%m-%d").ok();
+        } else if let Some(rest) = line.strip_prefix("#+SPOON_BUDGET:") {
+            spoon_budget = rest.trim().parse().unwrap_or(50);
+        }
+    }
+
+    let date = date?;
+
+    let mut active_contexts = Vec::new();
+    let mut confirmed_task_ids = Vec::new();
+    let mut picked_media_ids = Vec::new();
+    let mut picked_shopping_ids = Vec::new();
+
+    // Parse sections
+    let mut current_section = "";
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed == "* Active Contexts" {
+            current_section = "contexts";
+        } else if trimmed == "* Confirmed Tasks" {
+            current_section = "tasks";
+        } else if trimmed == "* Picked Media" {
+            current_section = "media";
+        } else if trimmed == "* Picked Shopping" {
+            current_section = "shopping";
+        } else if trimmed.starts_with("* ") {
+            current_section = "";
+        } else if let Some(item) = trimmed.strip_prefix("- ") {
+            match current_section {
+                "contexts" => active_contexts.push(item.to_string()),
+                "tasks" => {
+                    if let Ok(id) = Uuid::parse_str(item) {
+                        confirmed_task_ids.push(id);
+                    }
+                }
+                "media" => {
+                    if let Ok(id) = Uuid::parse_str(item) {
+                        picked_media_ids.push(id);
+                    }
+                }
+                "shopping" => {
+                    if let Ok(id) = Uuid::parse_str(item) {
+                        picked_shopping_ids.push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Some(DayPlan {
+        date,
+        spoon_budget,
+        active_contexts,
+        confirmed_task_ids,
+        picked_media_ids,
+        picked_shopping_ids,
+    })
 }

@@ -1,5 +1,7 @@
 use chrono::NaiveDateTime;
 
+use crate::core::day_plan::DayPlan;
+use crate::core::list_item::ListItem;
 use crate::core::project::Project;
 use crate::core::task::Task;
 
@@ -88,6 +90,9 @@ impl OrgWriter {
             "{indent}:CREATED: [{}]\n",
             task.created.format("%Y-%m-%d %a %H:%M")
         ));
+        if let Some(esc) = task.esc {
+            out.push_str(&format!("{indent}:ESC: {}\n", esc));
+        }
         out.push_str(&format!("{indent}:END:\n"));
 
         // Notes
@@ -114,6 +119,80 @@ impl OrgWriter {
                 out.push_str(&Self::write_task_at_level(task, 2));
                 out.push('\n');
             }
+        }
+
+        out
+    }
+
+    /// Write a complete org file for list items (no #+TODO line).
+    pub fn write_list_items_file(title: &str, items: &[ListItem]) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("#+TITLE: {}\n\n", title));
+
+        for item in items {
+            out.push_str(&Self::write_list_item(item));
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// Write a single list item as an org heading.
+    pub fn write_list_item(item: &ListItem) -> String {
+        let mut out = String::new();
+        let indent = "  ";
+
+        out.push_str(&format!("* {}\n", item.title));
+
+        // Properties drawer
+        out.push_str(&format!("{indent}:PROPERTIES:\n"));
+        out.push_str(&format!("{indent}:ID: {}\n", item.id));
+        out.push_str(&format!(
+            "{indent}:CREATED: [{}]\n",
+            item.created.format("%Y-%m-%d %a %H:%M")
+        ));
+        out.push_str(&format!("{indent}:END:\n"));
+
+        // Notes
+        if !item.notes.is_empty() {
+            for line in item.notes.lines() {
+                out.push_str(indent);
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        out
+    }
+
+    /// Write a day plan to org format.
+    pub fn write_day_plan(plan: &DayPlan) -> String {
+        let mut out = String::new();
+        out.push_str("#+TITLE: Day Plan\n");
+        out.push_str(&format!("#+DATE: {}\n", plan.date.format("%Y-%m-%d")));
+        out.push_str(&format!("#+SPOON_BUDGET: {}\n\n", plan.spoon_budget));
+
+        out.push_str("* Active Contexts\n");
+        for ctx in &plan.active_contexts {
+            out.push_str(&format!("  - {}\n", ctx));
+        }
+        out.push('\n');
+
+        out.push_str("* Confirmed Tasks\n");
+        for id in &plan.confirmed_task_ids {
+            out.push_str(&format!("  - {}\n", id));
+        }
+        out.push('\n');
+
+        out.push_str("* Picked Media\n");
+        for id in &plan.picked_media_ids {
+            out.push_str(&format!("  - {}\n", id));
+        }
+        out.push('\n');
+
+        out.push_str("* Picked Shopping\n");
+        for id in &plan.picked_shopping_ids {
+            out.push_str(&format!("  - {}\n", id));
         }
 
         out

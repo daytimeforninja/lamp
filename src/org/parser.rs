@@ -208,6 +208,9 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         .then(|| heading.notes.lines().next().unwrap_or("").to_string())
         .filter(|s| !s.is_empty());
 
+    let esc = OrgParser::get_property(&heading.properties, "ESC")
+        .and_then(|s| s.trim().parse::<u32>().ok());
+
     Task {
         id,
         title: heading.title.clone(),
@@ -222,6 +225,7 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         completed: None,
         project: None,
         waiting_for,
+        esc,
     }
 }
 

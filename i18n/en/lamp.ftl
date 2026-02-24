@@ -73,3 +73,41 @@ review-habits-week = Habit completion this week
 review-prompt-inbox = Start by processing your inbox to zero.
 review-prompt-stuck = Some projects need a next action defined.
 review-prompt-good = Everything looks good. Keep it up!
+
+# Lists
+nav-media = Media
+nav-shopping = Shopping
+media-placeholder = Add a recommendation...
+media-empty = No media recommendations yet.
+shopping-placeholder = Add an item...
+shopping-empty = Shopping list is empty.
+
+# Mode toggle
+mode-plan = Plan
+mode-do = Do
+
+# Daily Planning
+nav-daily-planning = Daily Planning
+planning-spoon-budget = Spoon Budget
+planning-active-contexts = Active Contexts
+planning-suggestions = Suggested tasks ({ $committed }/{ $budget } spoons committed)
+planning-no-suggestions = No more suggestions fit your remaining budget.
+planning-todays-plan = Today's Plan
+planning-no-tasks = No tasks confirmed yet.
+planning-confirm = Confirm
+planning-skip = Skip
+planning-remove = Remove
+planning-add = Add
+planning-media = Media
+planning-shopping = Shopping
+
+# Do mode
+do-spoons-remaining = { $remaining }/{ $budget } spoons remaining
+do-tasks = Tasks
+do-media = Media
+do-shopping = Shopping
+do-empty = No plan for today. Switch to Plan mode and use Daily Planning.
+do-plan-empty = Your plan is empty. Switch to Plan mode to add tasks and items.
+
+# ESC
+esc-column = ESC
