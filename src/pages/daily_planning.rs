@@ -39,7 +39,7 @@ pub fn daily_planning_view<'a>(
 
     let spent = day_plan
         .as_ref()
-        .map(|dp| dp.spent_esc(all_tasks))
+        .map(|dp| dp.spent_spoons)
         .unwrap_or(0);
     let remaining = budget.saturating_sub(spent);
 
@@ -73,11 +73,52 @@ pub fn daily_planning_view<'a>(
     }
     content = content.push(ctx_row);
 
-    // Section 3: Suggestions
+    // Section 3: Due / Scheduled Today
+    let today = chrono::Local::now().date_naive();
+    let due_today: Vec<&Task> = all_tasks
+        .iter()
+        .filter(|t| {
+            !t.state.is_done()
+                && (t.scheduled.is_some_and(|d| d <= today)
+                    || t.deadline.is_some_and(|d| d <= today))
+        })
+        .collect();
+
+    if !due_today.is_empty() {
+        content = content.push(text::title4("Due / Scheduled Today"));
+        let mut due_col = column().spacing(4);
+        for task in &due_today {
+            let id = task.id;
+            let is_confirmed = confirmed_ids.contains(&id);
+            let mut label_parts: Vec<String> = Vec::new();
+            if task.deadline.is_some_and(|d| d <= today) {
+                label_parts.push("deadline".to_string());
+            }
+            if task.scheduled.is_some_and(|d| d <= today) {
+                label_parts.push("scheduled".to_string());
+            }
+            let date_badge = format!(" ({})", label_parts.join(", "));
+            let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
+            let title_text = format!("{}{}{}", task.title, esc_text, date_badge);
+
+            let mut r = row()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .push(text::body(title_text).width(Length::Fill));
+            if is_confirmed {
+                r = r.push(button::standard("Remove").on_press(Message::UnconfirmTask(id)));
+            } else {
+                r = r.push(button::suggested("Add").on_press(Message::ConfirmTask(id)));
+            }
+            due_col = due_col.push(r);
+        }
+        content = content.push(due_col);
+    }
+
+    // Section 4: Suggestions
     let header_text = format!("Suggested tasks ({}/{} spoons spent)", spent, budget);
     content = content.push(text::title4(header_text));
 
-    let today = chrono::Local::now().date_naive();
     let suggestions = build_suggestions(all_tasks, &confirmed_ids, rejected, &active_contexts, remaining, today);
 
     if suggestions.is_empty() {
@@ -94,12 +135,8 @@ pub fn daily_planning_view<'a>(
                 .align_y(Alignment::Center)
                 .push(text::body(title_text).width(Length::Fill))
                 .push(
-                    button::suggested("Confirm")
+                    button::suggested("Add")
                         .on_press(Message::ConfirmTask(id)),
-                )
-                .push(
-                    button::standard("Skip")
-                        .on_press(Message::RejectSuggestion(id)),
                 );
             suggestion_col = suggestion_col.push(r);
         }

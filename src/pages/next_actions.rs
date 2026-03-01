@@ -47,11 +47,11 @@ pub fn next_actions_view(
     for (context, tasks) in &by_context {
         let mut section = column().spacing(4);
         section = section.push(text::title4(context.clone()));
-        section = section.push(task_grid(tasks.iter().copied(), ctx));
+        section = section.push(task_grid(tasks.iter().copied(), ctx, None));
         content = content.push(section);
     }
 
-    container(scrollable(content.padding(16)))
+    container(scrollable(content.padding(16).width(Length::Fill)))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()

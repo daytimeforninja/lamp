@@ -89,6 +89,12 @@ pub struct Task {
     pub project: Option<String>,
     pub waiting_for: Option<String>,
     pub esc: Option<u32>,
+    pub delegated: Option<NaiveDate>,
+    pub follow_up: Option<NaiveDate>,
+    pub sync_href: Option<String>,
+    pub sync_hash: Option<u64>,
+    /// Original CalDAV UID string (preserved for case-sensitive roundtrip)
+    pub sync_uid: Option<String>,
 }
 
 impl Task {
@@ -108,6 +114,11 @@ impl Task {
             project: None,
             waiting_for: None,
             esc: None,
+            delegated: None,
+            follow_up: None,
+            sync_href: None,
+            sync_hash: None,
+            sync_uid: None,
         }
     }
 

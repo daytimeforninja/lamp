@@ -1,19 +1,29 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::task::Task;
 
 /// A GTD project — a multi-step outcome with associated tasks.
+/// Supports GTD's Natural Planning Model with purpose, outcome, and brainstorm fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    pub id: Uuid,
     pub name: String,
     pub tasks: Vec<Task>,
+    pub purpose: String,
+    pub outcome: String,
+    pub brainstorm: String,
 }
 
 impl Project {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
+            id: Uuid::new_v4(),
             name: name.into(),
             tasks: Vec::new(),
+            purpose: String::new(),
+            outcome: String::new(),
+            brainstorm: String::new(),
         }
     }
 

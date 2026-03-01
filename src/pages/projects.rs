@@ -63,9 +63,10 @@ pub fn projects_view<'a>(
                 section = section.push(text::caption(fl!("projects-stuck")));
             }
 
+            // Task list
             let active: Vec<&Task> = project.tasks.iter().filter(|t| t.state.is_active()).collect();
             if !active.is_empty() {
-                section = section.push(task_grid(active.into_iter(), ctx));
+                section = section.push(task_grid(active.into_iter(), ctx, None));
             }
 
             // Per-project task input
@@ -99,8 +100,9 @@ pub fn projects_view<'a>(
         }
     }
 
-    container(scrollable(content.padding(16)))
+    container(scrollable(content.padding(16).width(Length::Fill)))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
 }
+

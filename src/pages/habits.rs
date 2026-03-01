@@ -49,7 +49,7 @@ pub fn habits_view<'a>(habits: &[Habit], habit_input: &str) -> Element<'a, Messa
         }
     }
 
-    container(scrollable(content.padding(16)))
+    container(scrollable(content.padding(16).width(Length::Fill)))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()

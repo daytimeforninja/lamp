@@ -8,7 +8,7 @@ use cosmic::widget::{button, checkbox, column, container, dropdown, icon, row, t
 use cosmic::{Element, theme};
 
 use crate::core::task::{Priority, Task, TaskState};
-use crate::message::Message;
+use crate::message::{Message, SortColumn};
 
 const STATE_LABELS: &[&str] = &["TODO", "NEXT", "WAIT", "SOME"];
 const ESC_LABELS: &[&str] = &["-", "5", "10", "15", "20", "25", "30", "40", "50", "75", "100"];
@@ -34,7 +34,9 @@ const COL_CTX: f32 = 120.0;
 const COL_PROJECT: f32 = 100.0;
 const COL_DATE: f32 = 96.0;
 const COL_ESC: f32 = 48.0;
-const COL_DELETE: f32 = 28.0;
+const COL_DELETE: f32 = 40.0;
+
+use crate::sync::carddav::Contact;
 
 /// Context passed to task grid.
 pub struct TaskRowCtx<'a> {
@@ -42,6 +44,8 @@ pub struct TaskRowCtx<'a> {
     pub project_names: &'a [String],
     pub expanded_task: Option<Uuid>,
     pub note_inputs: &'a HashMap<Uuid, String>,
+    pub waiting_for_inputs: &'a HashMap<Uuid, String>,
+    pub contacts: &'a [Contact],
 }
 
 // --- Date picker presets ---
@@ -140,40 +144,92 @@ fn col_fill(content: impl Into<Element<'static, Message>>) -> Element<'static, M
 
 // --- Table-based task list ---
 
-fn header_row(has_projects: bool) -> Element<'static, Message> {
+fn sort_indicator(sort: Option<(SortColumn, bool)>, col: SortColumn) -> &'static str {
+    match sort {
+        Some((c, true)) if c == col => " ▲",
+        Some((c, false)) if c == col => " ▼",
+        _ => "",
+    }
+}
+
+fn header_label(
+    label: &str,
+    width: f32,
+    sortable: bool,
+    sort: Option<(SortColumn, bool)>,
+    sort_col: SortColumn,
+) -> Element<'static, Message> {
+    if sortable {
+        let display = format!("{}{}", label, sort_indicator(sort, sort_col));
+        col(width,
+            button::custom(text::caption(display).size(12.0))
+                .padding([0, 0])
+                .class(theme::Button::Text)
+                .on_press(Message::SetAllTasksSort(sort_col)),
+        )
+    } else {
+        col(width, text::caption(label.to_string()))
+    }
+}
+
+fn header_label_fill(
+    label: &str,
+    sortable: bool,
+    sort: Option<(SortColumn, bool)>,
+    sort_col: SortColumn,
+) -> Element<'static, Message> {
+    if sortable {
+        let display = format!("{}{}", label, sort_indicator(sort, sort_col));
+        col_fill(
+            button::custom(text::caption(display).size(12.0))
+                .padding([0, 0])
+                .class(theme::Button::Text)
+                .on_press(Message::SetAllTasksSort(sort_col)),
+        )
+    } else {
+        col_fill(text::caption(label.to_string()))
+    }
+}
+
+fn header_row(has_projects: bool, sortable: bool, sort: Option<(SortColumn, bool)>) -> Element<'static, Message> {
     let mut r = row()
         .spacing(8)
         .align_y(Alignment::Center)
         .push(col(COL_CHECK, text::caption("")))
-        .push(col(COL_STATE, text::caption("State")))
-        .push(col(COL_PRI, text::caption("Pri")))
-        .push(col_fill(text::caption("Title")))
-        .push(col(COL_CTX, text::caption("Context")));
+        .push(header_label("State", COL_STATE, sortable, sort, SortColumn::State))
+        .push(header_label("Pri", COL_PRI, sortable, sort, SortColumn::Priority))
+        .push(header_label_fill("Title", sortable, sort, SortColumn::Title))
+        .push(header_label("Context", COL_CTX, sortable, sort, SortColumn::Context));
 
     if has_projects {
-        r = r.push(col(COL_PROJECT, text::caption("Project")));
+        r = r.push(col(COL_PROJECT, text::caption("Project".to_string())));
     }
 
     r = r
-        .push(col(COL_ESC, text::caption("ESC")))
-        .push(col(COL_DATE, text::caption("Sched")))
-        .push(col(COL_DATE, text::caption("Due")))
+        .push(header_label("ESC", COL_ESC, sortable, sort, SortColumn::Esc))
+        .push(header_label("Sched", COL_DATE, sortable, sort, SortColumn::Scheduled))
+        .push(header_label("Due", COL_DATE, sortable, sort, SortColumn::Deadline))
         .push(col(COL_DELETE, text::caption("")));
 
     r.width(Length::Fill).into()
 }
 
 /// Build a column with header + task rows, all columns aligned via fixed widths.
+/// Pass `sort = Some(...)` to enable sortable column headers.
+/// Headers are clickable whenever `sort` is provided (even `Some(None)` for no active sort).
 pub fn task_grid<'a>(
     tasks: impl Iterator<Item = &'a Task>,
     ctx: &TaskRowCtx,
+    sort: Option<Option<(SortColumn, bool)>>,
 ) -> Element<'static, Message> {
     let has_projects = !ctx.project_names.is_empty();
+    let sortable = sort.is_some();
+    let active_sort = sort.flatten();
 
     let mut content = column()
         .spacing(4)
         .width(Length::Fill)
-        .push(header_row(has_projects));
+        .push(header_row(has_projects, sortable, active_sort));
 
     for task in tasks {
         content = content.push(task_row(task, ctx, has_projects));
@@ -230,13 +286,26 @@ fn task_row(
             .on_press(Message::SetTaskPriority(id, next_priority)),
     );
 
-    // 4. Title (clickable to expand/collapse notes)
-    let title: Element<'static, Message> = col_fill(
-        button::custom(text::body(task.title.clone()))
+    // 4. Title (clickable to expand/collapse notes) + waiting_for label
+    let title: Element<'static, Message> = {
+        let title_btn: Element<'static, Message> = button::custom(text::body(task.title.clone()))
             .padding([0, 0])
             .class(theme::Button::Text)
-            .on_press(Message::ToggleTaskExpand(id)),
-    );
+            .on_press(Message::ToggleTaskExpand(id))
+            .into();
+        if let Some(ref wf) = task.waiting_for {
+            let label = format!("\u{2190} @{}", wf);
+            col_fill(
+                row()
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .push(title_btn)
+                    .push(text::caption(label).size(11.0)),
+            )
+        } else {
+            col_fill(title_btn)
+        }
+    };
 
     // 5. Context (tags + add dropdown)
     let mut ctx_items: Vec<Element<'static, Message>> = Vec::new();
@@ -330,6 +399,78 @@ fn task_row(
         let input_value = ctx.note_inputs.get(&id).cloned().unwrap_or_default();
 
         let mut notes_col = column().spacing(4).padding([4, 0, 4, 36]);
+
+        // Waiting-for input and follow-up date (only for Waiting state tasks)
+        if task.state == TaskState::Waiting {
+            let wf_value = ctx.waiting_for_inputs
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| task.waiting_for.clone().unwrap_or_default());
+            let wf_input = text_input::text_input("Waiting for...", wf_value)
+                .on_input(move |v| Message::WaitingForInputChanged(id, v))
+                .on_submit(move |_| Message::SetWaitingFor(id, String::new()))
+                .width(Length::Fill);
+            notes_col = notes_col.push(
+                row()
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .push(text::caption("Waiting for:"))
+                    .push(wf_input),
+            );
+
+            // Follow-up date picker
+            let follow_up = task.follow_up;
+            notes_col = notes_col.push(
+                row()
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .push(text::caption("Follow up:"))
+                    .push(date_dropdown(follow_up, move |d| Message::SetFollowUp(id, d))),
+            );
+
+            // Contact suggestions for waiting_for input
+            if !ctx.contacts.is_empty() {
+                let current_wf = ctx.waiting_for_inputs
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| task.waiting_for.clone().unwrap_or_default());
+                if !current_wf.is_empty() {
+                    let prefix = current_wf.to_lowercase();
+                    let suggestions: Vec<&Contact> = ctx.contacts
+                        .iter()
+                        .filter(|c| c.name.to_lowercase().starts_with(&prefix))
+                        .take(5)
+                        .collect();
+                    if !suggestions.is_empty() {
+                        let mut suggestion_row = row().spacing(4);
+                        for contact in suggestions {
+                            let name = contact.name.clone();
+                            suggestion_row = suggestion_row.push(
+                                button::custom(text::caption(name.clone()).size(11.0))
+                                    .padding([2, 8])
+                                    .class(theme::Button::Text)
+                                    .on_press(Message::SetWaitingFor(id, name)),
+                            );
+                        }
+                        notes_col = notes_col.push(suggestion_row);
+                    }
+                }
+            }
+
+            // Show delegated date if set
+            if let Some(delegated) = task.delegated {
+                notes_col = notes_col.push(
+                    text::caption(format!("Delegated: {}", delegated.format("%Y-%m-%d"))).size(11.0),
+                );
+            }
+        }
+
+        // Editable title (Enter to confirm + collapse)
+        let title_input = text_input::text_input("Task title...", task.title.clone())
+            .on_input(move |v| Message::UpdateTaskTitle(id, v))
+            .on_submit(move |_| Message::ToggleTaskExpand(id))
+            .width(Length::Fill);
+        notes_col = notes_col.push(title_input);
 
         if !notes_text.is_empty() {
             notes_col = notes_col.push(

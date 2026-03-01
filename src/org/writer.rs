@@ -1,7 +1,10 @@
 use chrono::NaiveDateTime;
+use std::io::Write;
 
+use crate::core::account::Account;
 use crate::core::day_plan::DayPlan;
 use crate::core::list_item::ListItem;
+use crate::core::note::Note;
 use crate::core::project::Project;
 use crate::core::task::Task;
 
@@ -49,17 +52,20 @@ impl OrgWriter {
 
         // Tags
         let all_tags = task.contexts.clone();
-        if let Some(ref _wf) = task.waiting_for {
-            if !all_tags.contains(&"waiting".to_string()) {
-                // waiting_for is implied by WAITING state
-            }
-        }
         if !all_tags.is_empty() {
             out.push_str(" :");
             out.push_str(&all_tags.join(":"));
             out.push(':');
         }
         out.push('\n');
+
+        // CLOSED timestamp
+        if let Some(closed) = task.completed {
+            out.push_str(&format!(
+                "{indent}CLOSED: [{}]\n",
+                closed.format("%Y-%m-%d %a %H:%M")
+            ));
+        }
 
         // Planning line (SCHEDULED / DEADLINE)
         let mut planning = Vec::new();
@@ -93,6 +99,24 @@ impl OrgWriter {
         if let Some(esc) = task.esc {
             out.push_str(&format!("{indent}:ESC: {}\n", esc));
         }
+        if let Some(ref wf) = task.waiting_for {
+            out.push_str(&format!("{indent}:WAITING_FOR: {}\n", wf));
+        }
+        if let Some(delegated) = task.delegated {
+            out.push_str(&format!("{indent}:DELEGATED: {}\n", delegated.format("%Y-%m-%d")));
+        }
+        if let Some(follow_up) = task.follow_up {
+            out.push_str(&format!("{indent}:FOLLOW_UP: {}\n", follow_up.format("%Y-%m-%d")));
+        }
+        if let Some(ref sync_href) = task.sync_href {
+            out.push_str(&format!("{indent}:SYNC_HREF: {}\n", sync_href));
+        }
+        if let Some(sync_hash) = task.sync_hash {
+            out.push_str(&format!("{indent}:SYNC_HASH: {}\n", sync_hash));
+        }
+        if let Some(ref sync_uid) = task.sync_uid {
+            out.push_str(&format!("{indent}:SYNC_UID: {}\n", sync_uid));
+        }
         out.push_str(&format!("{indent}:END:\n"));
 
         // Notes
@@ -115,6 +139,27 @@ impl OrgWriter {
 
         for project in projects {
             out.push_str(&format!("* Project: {}\n", project.name));
+
+            // Properties drawer (always written for ID)
+            out.push_str("  :PROPERTIES:\n");
+            out.push_str(&format!("  :ID: {}\n", project.id));
+            if !project.purpose.is_empty() {
+                out.push_str(&format!("  :PURPOSE: {}\n", project.purpose));
+            }
+            if !project.outcome.is_empty() {
+                out.push_str(&format!("  :OUTCOME: {}\n", project.outcome));
+            }
+            out.push_str("  :END:\n");
+
+            // Brainstorm as body text
+            if !project.brainstorm.is_empty() {
+                for line in project.brainstorm.lines() {
+                    out.push_str("  ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+
             for task in &project.tasks {
                 out.push_str(&Self::write_task_at_level(task, 2));
                 out.push('\n');
@@ -142,7 +187,11 @@ impl OrgWriter {
         let mut out = String::new();
         let indent = "  ";
 
-        out.push_str(&format!("* {}\n", item.title));
+        if item.done {
+            out.push_str(&format!("* DONE {}\n", item.title));
+        } else {
+            out.push_str(&format!("* {}\n", item.title));
+        }
 
         // Properties drawer
         out.push_str(&format!("{indent}:PROPERTIES:\n"));
@@ -165,12 +214,68 @@ impl OrgWriter {
         out
     }
 
+    /// Write a complete org file for accounts.
+    pub fn write_accounts_file(accounts: &[Account]) -> String {
+        let mut out = String::new();
+        out.push_str("#+TITLE: Accounts\n\n");
+
+        for account in accounts {
+            out.push_str(&Self::write_account(account));
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// Write a single account as an org heading.
+    pub fn write_account(account: &Account) -> String {
+        let mut out = String::new();
+        let indent = "  ";
+
+        out.push_str(&format!("* {}\n", account.name));
+
+        // Properties drawer
+        out.push_str(&format!("{indent}:PROPERTIES:\n"));
+        out.push_str(&format!("{indent}:ID: {}\n", account.id));
+        if !account.url.is_empty() {
+            out.push_str(&format!("{indent}:URL: {}\n", account.url));
+        }
+        if let Some(date) = account.last_checked {
+            out.push_str(&format!("{indent}:LAST_CHECKED: [{}]\n", date.format("%Y-%m-%d")));
+        }
+        out.push_str(&format!("{indent}:END:\n"));
+
+        // Notes as body text
+        if !account.notes.is_empty() {
+            for line in account.notes.lines() {
+                out.push_str(indent);
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        out
+    }
+
+    /// Append a single account to an existing org file (e.g. closed_accounts.org).
+    pub fn append_account_to_file(path: &std::path::Path, account: &Account) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let content = Self::write_account(account);
+        file.write_all(content.as_bytes())?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+
     /// Write a day plan to org format.
     pub fn write_day_plan(plan: &DayPlan) -> String {
         let mut out = String::new();
         out.push_str("#+TITLE: Day Plan\n");
         out.push_str(&format!("#+DATE: {}\n", plan.date.format("%Y-%m-%d")));
-        out.push_str(&format!("#+SPOON_BUDGET: {}\n\n", plan.spoon_budget));
+        out.push_str(&format!("#+SPOON_BUDGET: {}\n", plan.spoon_budget));
+        out.push_str(&format!("#+SPENT_SPOONS: {}\n\n", plan.spent_spoons));
 
         out.push_str("* Active Contexts\n");
         for ctx in &plan.active_contexts {
@@ -181,6 +286,13 @@ impl OrgWriter {
         out.push_str("* Confirmed Tasks\n");
         for id in &plan.confirmed_task_ids {
             out.push_str(&format!("  - {}\n", id));
+        }
+        out.push('\n');
+
+        out.push_str("* Completed Tasks\n");
+        for ct in &plan.completed_tasks {
+            let esc_str = ct.esc.map(|e| e.to_string()).unwrap_or_default();
+            out.push_str(&format!("  - {} | {} | {}\n", ct.id, ct.title, esc_str));
         }
         out.push('\n');
 
@@ -196,6 +308,30 @@ impl OrgWriter {
         }
 
         out
+    }
+
+    /// Append a single task to an existing org file (e.g. archive.org).
+    pub fn append_to_file(path: &std::path::Path, task: &Task) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let content = Self::write_task(task);
+        file.write_all(content.as_bytes())?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+
+    /// Append a single list item to an existing org file (e.g. consumed.org, bought.org).
+    pub fn append_list_item_to_file(path: &std::path::Path, item: &ListItem) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let content = Self::write_list_item(item);
+        file.write_all(content.as_bytes())?;
+        file.write_all(b"\n")?;
+        Ok(())
     }
 
     /// Write a logbook entry for a state change.
@@ -264,6 +400,63 @@ impl OrgWriter {
                 out.push('\n');
             }
             out.push_str("  :END:\n");
+        }
+
+        out
+    }
+
+    /// Write a single note as a standalone org file (for per-file storage).
+    pub fn write_note_file(note: &Note) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("#+TITLE: {}\n\n", note.title));
+        out.push_str(&Self::write_note(note));
+        out
+    }
+
+    /// Write a single note as an org heading.
+    pub fn write_note(note: &Note) -> String {
+        let mut out = String::new();
+        let indent = "  ";
+
+        // Headline with tags
+        out.push_str(&format!("* {}", note.title));
+        if !note.tags.is_empty() {
+            out.push_str(" :");
+            out.push_str(&note.tags.join(":"));
+            out.push(':');
+        }
+        out.push('\n');
+
+        // Properties drawer
+        out.push_str(&format!("{indent}:PROPERTIES:\n"));
+        out.push_str(&format!("{indent}:ID: {}\n", note.id));
+        out.push_str(&format!(
+            "{indent}:CREATED: [{}]\n",
+            note.created.format("%Y-%m-%d %a %H:%M")
+        ));
+        out.push_str(&format!(
+            "{indent}:MODIFIED: [{}]\n",
+            note.modified.format("%Y-%m-%d %a %H:%M")
+        ));
+        if let Some(ref source) = note.source {
+            out.push_str(&format!("{indent}:SOURCE: {}\n", source));
+        }
+        if !note.links.is_empty() {
+            let links_str: Vec<String> = note.links.iter().map(|l| l.to_org()).collect();
+            out.push_str(&format!("{indent}:LINKS: {}\n", links_str.join(" ")));
+        }
+        if let Some(ref etag) = note.sync_etag {
+            out.push_str(&format!("{indent}:SYNC_ETAG: {}\n", etag));
+        }
+        out.push_str(&format!("{indent}:END:\n"));
+
+        // Body
+        if !note.body.is_empty() {
+            for line in note.body.lines() {
+                out.push_str(indent);
+                out.push_str(line);
+                out.push('\n');
+            }
         }
 
         out

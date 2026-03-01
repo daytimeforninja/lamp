@@ -7,3 +7,14 @@ Terminal=false
 Type=Application
 Categories=Office;ProjectManagement;
 Keywords=tasks;gtd;todo;org-mode;productivity;
+Actions=Capture;Today;
+
+[Desktop Action Capture]
+Name=Quick Capture
+Exec=lamp --capture
+Icon=dev.lamp.app
+
+[Desktop Action Today]
+Name=Today's Plan
+Exec=lamp --today
+Icon=dev.lamp.app

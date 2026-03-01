@@ -20,6 +20,10 @@ static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+static CLOSED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"CLOSED:\s*\[(?P<datetime>\d{4}-\d{2}-\d{2}\s+\w+\s+\d{2}:\d{2})\]").unwrap()
+});
+
 static PROPERTY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*:(?P<key>[A-Z_]+):\s+(?P<value>.+)$").unwrap()
 });
@@ -43,6 +47,7 @@ pub struct ParsedHeading {
     pub tags: Vec<String>,
     pub scheduled: Option<NaiveDate>,
     pub deadline: Option<NaiveDate>,
+    pub closed: Option<NaiveDateTime>,
     pub recurrence: Option<Recurrence>,
     pub properties: Vec<(String, String)>,
     pub logbook_entries: Vec<NaiveDateTime>,
@@ -75,6 +80,22 @@ impl OrgParser {
                     .unwrap_or_default();
 
                 i += 1;
+
+                // Parse CLOSED line
+                let mut closed = None;
+                if i < lines.len() {
+                    let line = lines[i].trim_start();
+                    if line.starts_with("CLOSED:") {
+                        if let Some(caps) = CLOSED_RE.captures(lines[i]) {
+                            closed = NaiveDateTime::parse_from_str(
+                                &caps["datetime"],
+                                "%Y-%m-%d %a %H:%M",
+                            )
+                            .ok();
+                        }
+                        i += 1;
+                    }
+                }
 
                 // Parse planning line (SCHEDULED/DEADLINE)
                 let mut scheduled = None;
@@ -158,6 +179,7 @@ impl OrgParser {
                     tags,
                     scheduled,
                     deadline,
+                    closed,
                     recurrence,
                     properties,
                     logbook_entries,
@@ -201,15 +223,37 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         .cloned()
         .collect();
 
-    let waiting_for = heading
-        .tags
-        .iter()
-        .any(|t| t == "waiting")
-        .then(|| heading.notes.lines().next().unwrap_or("").to_string())
+    let waiting_for = OrgParser::get_property(&heading.properties, "WAITING_FOR")
+        .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
     let esc = OrgParser::get_property(&heading.properties, "ESC")
         .and_then(|s| s.trim().parse::<u32>().ok());
+
+    let delegated = OrgParser::get_property(&heading.properties, "DELEGATED")
+        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok());
+
+    let follow_up = OrgParser::get_property(&heading.properties, "FOLLOW_UP")
+        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok());
+
+    let completed = heading.closed.or_else(|| {
+        OrgParser::get_property(&heading.properties, "CLOSED")
+            .and_then(|s| {
+                let s = s.trim_matches(|c| c == '[' || c == ']');
+                NaiveDateTime::parse_from_str(s, "%Y-%m-%d %a %H:%M").ok()
+            })
+    });
+
+    let sync_href = OrgParser::get_property(&heading.properties, "SYNC_HREF")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
+    let sync_hash = OrgParser::get_property(&heading.properties, "SYNC_HASH")
+        .and_then(|s| s.trim().parse::<u64>().ok());
+
+    let sync_uid = OrgParser::get_property(&heading.properties, "SYNC_UID")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
 
     Task {
         id,
@@ -222,10 +266,15 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         recurrence: heading.recurrence.clone(),
         notes: heading.notes.clone(),
         created,
-        completed: None,
+        completed,
         project: None,
         waiting_for,
         esc,
+        delegated,
+        follow_up,
+        sync_href,
+        sync_hash,
+        sync_uid,
     }
 }
 

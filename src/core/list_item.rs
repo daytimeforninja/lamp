@@ -7,6 +7,7 @@ pub struct ListItem {
     pub title: String,
     pub notes: String,
     pub created: NaiveDateTime,
+    pub done: bool,
 }
 
 impl ListItem {
@@ -16,6 +17,7 @@ impl ListItem {
             title: title.into(),
             notes: String::new(),
             created: chrono::Local::now().naive_local(),
+            done: false,
         }
     }
 }

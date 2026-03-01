@@ -1,11 +1,14 @@
+use std::collections::HashMap;
+
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{checkbox, column, container, row, scrollable, text};
+use cosmic::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
 use cosmic::Element;
 
 use crate::core::day_plan::DayPlan;
 use crate::core::habit::Habit;
 use crate::core::list_item::ListItem;
 use crate::core::task::Task;
+use crate::fl;
 use crate::message::Message;
 
 pub fn do_mode_view<'a>(
@@ -14,6 +17,8 @@ pub fn do_mode_view<'a>(
     habits: &[Habit],
     media_items: &[ListItem],
     shopping_items: &[ListItem],
+    expanded_task: Option<uuid::Uuid>,
+    note_inputs: &HashMap<uuid::Uuid, String>,
 ) -> Element<'a, Message> {
     let today = chrono::Local::now().date_naive();
 
@@ -21,8 +26,7 @@ pub fn do_mode_view<'a>(
         return container(
             column()
                 .spacing(12)
-                .push(text::title3("No plan for today"))
-                .push(text::body("Switch to Plan mode and use Daily Planning."))
+                .push(text::title3(fl!("do-empty")))
                 .align_x(Alignment::Center)
                 .width(Length::Fill),
         )
@@ -30,28 +34,20 @@ pub fn do_mode_view<'a>(
         .into();
     };
 
-    let remaining = plan.remaining_budget(all_tasks);
+    let remaining = plan.remaining_budget();
     let budget = plan.spoon_budget;
 
     let mut content = column().spacing(24).padding(16).width(Length::Fill);
 
     // Spoon meter
-    let pct = if budget > 0 {
-        (remaining as f32 / budget as f32 * 100.0) as u32
-    } else {
-        0
-    };
-    let color_label = if pct > 50 {
-        "green"
-    } else if pct > 25 {
-        "yellow"
-    } else {
-        "red"
-    };
-    let meter_text = format!("{}/{} spoons remaining ({})", remaining, budget, color_label);
+    let meter_text = fl!(
+        "do-spoons-remaining",
+        remaining = remaining.to_string(),
+        budget = budget.to_string()
+    );
     content = content.push(text::title3(meter_text));
 
-    // Tasks section (sorted by ESC ascending, None last)
+    // Tasks section — active confirmed tasks (sorted by ESC ascending, None last)
     let mut confirmed_tasks: Vec<&Task> = plan
         .confirmed_task_ids
         .iter()
@@ -59,24 +55,76 @@ pub fn do_mode_view<'a>(
         .collect();
     confirmed_tasks.sort_by_key(|t| t.esc.unwrap_or(u32::MAX));
 
-    if !confirmed_tasks.is_empty() {
-        content = content.push(text::title4("Tasks"));
+    let has_completed = !plan.completed_tasks.is_empty();
+
+    if !confirmed_tasks.is_empty() || has_completed {
+        content = content.push(text::title4(fl!("do-tasks")));
         let mut tasks_col = column().spacing(4);
+
+        // Active tasks
         for task in &confirmed_tasks {
             let id = task.id;
-            let is_done = task.state.is_done();
             let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
 
             let r = row()
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .push(
-                    checkbox("", is_done)
+                    checkbox("", false)
                         .on_toggle(move |_| Message::DoMarkDone(id)),
                 )
-                .push(text::body(format!("{}{}", task.title, esc_text)).width(Length::Fill));
+                .push(
+                    button::text(format!("{}{}", task.title, esc_text))
+                        .on_press(Message::ToggleTaskExpand(id)),
+                )
+                .push(cosmic::widget::horizontal_space())
+                .push(
+                    button::icon(cosmic::widget::icon::from_name("accessories-text-editor-symbolic"))
+                        .on_press(Message::ToggleTaskExpand(id)),
+                );
+
+            let mut task_col = column().spacing(4);
+            task_col = task_col.push(r);
+
+            if expanded_task == Some(id) {
+                let mut notes_col = column().spacing(4).padding([4, 0, 4, 36]);
+
+                if !task.notes.is_empty() {
+                    notes_col = notes_col.push(
+                        container(text::body(task.notes.clone()))
+                            .padding([4, 8])
+                            .width(Length::Fill),
+                    );
+                }
+
+                let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
+                let note_input = text_input::text_input("Add a note...", input_value)
+                    .on_input(move |v| Message::NoteInputChanged(id, v))
+                    .on_submit(move |_| Message::AppendNote(id))
+                    .width(Length::Fill);
+                notes_col = notes_col.push(note_input);
+
+                task_col = task_col.push(notes_col);
+            }
+
+            tasks_col = tasks_col.push(task_col);
+        }
+
+        // Completed tasks (shown as checked, clickable to un-complete)
+        for ct in &plan.completed_tasks {
+            let id = ct.id;
+            let esc_text = ct.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
+            let r = row()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .push(
+                    checkbox("", true)
+                        .on_toggle(move |_| Message::DoMarkDone(id)),
+                )
+                .push(text::caption(format!("{}{}", ct.title, esc_text)).width(Length::Fill));
             tasks_col = tasks_col.push(r);
         }
+
         content = content.push(tasks_col);
     }
 
@@ -84,7 +132,7 @@ pub fn do_mode_view<'a>(
     let due_habits: Vec<&Habit> = habits.iter().filter(|h| h.is_due(today)).collect();
 
     if !due_habits.is_empty() {
-        content = content.push(text::title4("Habits"));
+        content = content.push(text::title4(fl!("do-habits")));
         let mut habits_col = column().spacing(4);
         for habit in &due_habits {
             let id = habit.task.id;
@@ -109,7 +157,7 @@ pub fn do_mode_view<'a>(
         .collect();
 
     if !picked_media.is_empty() {
-        content = content.push(text::title4("Media"));
+        content = content.push(text::title4(fl!("do-media")));
         let mut media_col = column().spacing(4);
         for item in &picked_media {
             let id = item.id;
@@ -134,7 +182,7 @@ pub fn do_mode_view<'a>(
         .collect();
 
     if !picked_shopping.is_empty() {
-        content = content.push(text::title4("Shopping"));
+        content = content.push(text::title4(fl!("do-shopping")));
         let mut shopping_col = column().spacing(4);
         for item in &picked_shopping {
             let id = item.id;
@@ -153,9 +201,7 @@ pub fn do_mode_view<'a>(
 
     // Empty state if no items at all
     if confirmed_tasks.is_empty() && due_habits.is_empty() && picked_media.is_empty() && picked_shopping.is_empty() {
-        content = content.push(
-            text::body("Your plan is empty. Switch to Plan mode to add tasks and items.")
-        );
+        content = content.push(text::body(fl!("do-plan-empty")));
     }
 
     container(scrollable(content))

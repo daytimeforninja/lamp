@@ -25,7 +25,7 @@ pub fn waiting_view(
             .into();
     }
 
-    container(scrollable(container(task_grid(waiting_tasks.into_iter(), ctx)).padding(16)))
+    container(scrollable(container(task_grid(waiting_tasks.into_iter(), ctx, None)).padding(16)))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()

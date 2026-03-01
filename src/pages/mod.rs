@@ -1,12 +1,17 @@
+pub mod accounts;
 pub mod all_tasks;
+pub mod conflicts;
+pub mod contacts;
 pub mod daily_planning;
 pub mod do_mode;
 pub mod habits;
 pub mod inbox;
 pub mod list;
 pub mod next_actions;
+pub mod notes;
 pub mod projects;
 pub mod review;
+pub mod settings;
 pub mod someday;
 pub mod temporal;
 pub mod waiting;

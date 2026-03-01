@@ -60,6 +60,8 @@
               expat
               fontconfig
               freetype
+              openssl
+              systemd
             ];
           };
 
@@ -109,6 +111,8 @@
               expat
               fontconfig
               freetype
+              openssl
+              systemd
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [

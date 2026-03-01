@@ -25,7 +25,7 @@ pub fn someday_view(
             .into();
     }
 
-    container(scrollable(container(task_grid(someday_tasks.into_iter(), ctx)).padding(16)))
+    container(scrollable(container(task_grid(someday_tasks.into_iter(), ctx, None)).padding(16)))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
