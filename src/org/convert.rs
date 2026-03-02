@@ -337,3 +337,87 @@ pub fn parse_notes(input: &str) -> Vec<Note> {
     let headings = OrgParser::parse(input);
     headings.iter().map(heading_to_note).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::task::TaskState;
+
+    #[test]
+    fn headings_to_tasks_basic() {
+        let input = "\
+#+TITLE: Test
+#+TODO: TODO NEXT WAITING SOMEDAY | DONE CANCELLED
+
+* TODO Buy groceries
+* NEXT Write report
+";
+        let tasks = parse_tasks(input);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].title, "Buy groceries");
+        assert_eq!(tasks[0].state, TaskState::Todo);
+        assert_eq!(tasks[1].title, "Write report");
+        assert_eq!(tasks[1].state, TaskState::Next);
+    }
+
+    #[test]
+    fn extract_projects_with_tasks() {
+        let input = "\
+#+TITLE: Projects
+#+TODO: TODO NEXT WAITING SOMEDAY | DONE CANCELLED
+
+* Project Alpha
+** TODO Task A1
+** NEXT Task A2
+* Project Beta
+** TODO Task B1
+";
+        let projects = parse_projects(input);
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].name, "Project Alpha");
+        assert_eq!(projects[0].tasks.len(), 2);
+        assert_eq!(projects[0].tasks[0].project.as_deref(), Some("Project Alpha"));
+        assert_eq!(projects[1].name, "Project Beta");
+        assert_eq!(projects[1].tasks.len(), 1);
+    }
+
+    #[test]
+    fn parse_day_plan_basic() {
+        let id1 = uuid::Uuid::new_v4();
+        let id2 = uuid::Uuid::new_v4();
+        let input = format!(
+            "\
+#+DATE: 2026-03-02
+#+SPOON_BUDGET: 60
+#+SPENT_SPOONS: 15
+
+* Active Contexts
+- @home
+- @work
+
+* Confirmed Tasks
+- {id1}
+
+* Completed Tasks
+- {id2} | Did the thing | 15
+"
+        );
+        let plan = parse_day_plan(&input).expect("should parse");
+        assert_eq!(plan.date, chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap());
+        assert_eq!(plan.spoon_budget, 60);
+        assert_eq!(plan.spent_spoons, 15);
+        assert_eq!(plan.active_contexts, vec!["@home", "@work"]);
+        assert_eq!(plan.confirmed_task_ids, vec![id1]);
+        assert_eq!(plan.completed_tasks.len(), 1);
+        assert_eq!(plan.completed_tasks[0].id, id2);
+        assert_eq!(plan.completed_tasks[0].esc, Some(15));
+    }
+
+    #[test]
+    fn parse_day_plan_no_date_returns_none() {
+        let input = "\
+#+SPOON_BUDGET: 50
+";
+        assert!(parse_day_plan(input).is_none());
+    }
+}

@@ -222,6 +222,12 @@ impl LampConfig {
                 .any(|a| a.purpose != CalendarPurpose::Disabled)
     }
 
+    /// Whether all sync tokens are empty (no prior sync).
+    #[cfg(test)]
+    fn sync_token_count(&self) -> usize {
+        self.sync_tokens.len()
+    }
+
     /// Ensure the org directory and files exist.
     pub fn ensure_files(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.org_directory)?;
@@ -265,5 +271,79 @@ impl LampConfig {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_org_dir_not_tmp() {
+        let config = LampConfig::default();
+        let dir = config.org_directory.to_string_lossy();
+        assert!(!dir.starts_with("/tmp"), "org_directory should not fall back to /tmp, got: {}", dir);
+    }
+
+    #[test]
+    fn sync_token_get_set() {
+        let mut config = LampConfig::default();
+        assert!(config.get_sync_token("/cal/1").is_none());
+
+        config.set_sync_token("/cal/1", "token-a");
+        assert_eq!(config.get_sync_token("/cal/1"), Some("token-a"));
+
+        // Update existing
+        config.set_sync_token("/cal/1", "token-b");
+        assert_eq!(config.get_sync_token("/cal/1"), Some("token-b"));
+
+        // No duplicates
+        assert_eq!(config.sync_token_count(), 1);
+
+        // Second calendar
+        config.set_sync_token("/cal/2", "token-c");
+        assert_eq!(config.sync_token_count(), 2);
+    }
+
+    #[test]
+    fn task_and_event_calendar_hrefs() {
+        let mut config = LampConfig::default();
+        config.calendar_assignments = vec![
+            CalendarAssignment { calendar_href: "/a".into(), purpose: CalendarPurpose::Tasks },
+            CalendarAssignment { calendar_href: "/b".into(), purpose: CalendarPurpose::Events },
+            CalendarAssignment { calendar_href: "/c".into(), purpose: CalendarPurpose::Disabled },
+            CalendarAssignment { calendar_href: "/d".into(), purpose: CalendarPurpose::Tasks },
+        ];
+        assert_eq!(config.task_calendar_hrefs(), vec!["/a", "/d"]);
+        assert_eq!(config.event_calendar_hrefs(), vec!["/b"]);
+    }
+
+    #[test]
+    fn sync_ready_requires_url_and_assignment() {
+        let mut config = LampConfig::default();
+        assert!(!config.sync_ready());
+
+        config.calendars.url = "https://cal.example.com".into();
+        assert!(!config.sync_ready()); // no assignments
+
+        config.calendar_assignments = vec![
+            CalendarAssignment { calendar_href: "/a".into(), purpose: CalendarPurpose::Disabled },
+        ];
+        assert!(!config.sync_ready()); // only disabled
+
+        config.calendar_assignments.push(
+            CalendarAssignment { calendar_href: "/b".into(), purpose: CalendarPurpose::Tasks },
+        );
+        assert!(config.sync_ready());
+    }
+
+    #[test]
+    fn path_helpers_join_correctly() {
+        let mut config = LampConfig::default();
+        config.org_directory = PathBuf::from("/data/lamp");
+        assert_eq!(config.inbox_path(), PathBuf::from("/data/lamp/inbox.org"));
+        assert_eq!(config.next_path(), PathBuf::from("/data/lamp/next.org"));
+        assert_eq!(config.projects_path(), PathBuf::from("/data/lamp/projects.org"));
+        assert_eq!(config.notes_dir(), PathBuf::from("/data/lamp/notes"));
     }
 }

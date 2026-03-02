@@ -172,3 +172,111 @@ impl Task {
         self.contexts.iter().any(|c| c == ctx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 2).unwrap()
+    }
+
+    #[test]
+    fn is_today_scheduled_today() {
+        let mut task = Task::new("Test");
+        task.scheduled = Some(today());
+        assert!(task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_scheduled_past() {
+        let mut task = Task::new("Test");
+        task.scheduled = Some(today() - chrono::Duration::days(3));
+        assert!(task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_scheduled_future() {
+        let mut task = Task::new("Test");
+        task.scheduled = Some(today() + chrono::Duration::days(3));
+        assert!(!task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_deadline_within_7_days() {
+        let mut task = Task::new("Test");
+        task.deadline = Some(today() + chrono::Duration::days(5));
+        assert!(task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_deadline_beyond_7_days() {
+        let mut task = Task::new("Test");
+        task.deadline = Some(today() + chrono::Duration::days(10));
+        assert!(!task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_done_task_excluded() {
+        let mut task = Task::new("Test");
+        task.scheduled = Some(today());
+        task.state = TaskState::Done;
+        assert!(!task.is_today(today()));
+    }
+
+    #[test]
+    fn is_today_no_dates() {
+        let task = Task::new("Test");
+        assert!(!task.is_today(today()));
+    }
+
+    #[test]
+    fn complete_sets_done_and_timestamp() {
+        let mut task = Task::new("Test");
+        task.complete();
+        assert_eq!(task.state, TaskState::Done);
+        assert!(task.completed.is_some());
+    }
+
+    #[test]
+    fn cancel_sets_cancelled_and_timestamp() {
+        let mut task = Task::new("Test");
+        task.cancel();
+        assert_eq!(task.state, TaskState::Cancelled);
+        assert!(task.completed.is_some());
+    }
+
+    #[test]
+    fn state_keyword_roundtrip() {
+        let states = [
+            TaskState::Todo,
+            TaskState::Next,
+            TaskState::Waiting,
+            TaskState::Someday,
+            TaskState::Done,
+            TaskState::Cancelled,
+        ];
+        for state in &states {
+            let kw = state.as_keyword();
+            let parsed = TaskState::from_keyword(kw).unwrap();
+            assert_eq!(*state, parsed);
+        }
+        assert!(TaskState::from_keyword("INVALID").is_none());
+    }
+
+    #[test]
+    fn priority_from_org_variants() {
+        assert_eq!(Priority::from_org("A"), Some(Priority::A));
+        assert_eq!(Priority::from_org("#B"), Some(Priority::B));
+        assert_eq!(Priority::from_org("[#C]"), Some(Priority::C));
+        assert_eq!(Priority::from_org("D"), None);
+    }
+
+    #[test]
+    fn has_context() {
+        let mut task = Task::new("Test");
+        task.contexts = vec!["@home".to_string(), "@work".to_string()];
+        assert!(task.has_context("@home"));
+        assert!(!task.has_context("@errands"));
+    }
+}

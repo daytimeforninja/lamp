@@ -72,3 +72,72 @@ impl Habit {
         !self.completions.iter().any(|dt| dt.date() == today)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::task::Task;
+
+    fn make_habit() -> Habit {
+        Habit::new(Task::new("Exercise"))
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn dt(y: i32, m: u32, d: u32) -> NaiveDateTime {
+        date(y, m, d).and_hms_opt(12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn empty_streak() {
+        let mut h = make_habit();
+        h.recalculate_streak(date(2026, 3, 2));
+        assert_eq!(h.streak, 0);
+        assert_eq!(h.best_streak, 0);
+    }
+
+    #[test]
+    fn streak_consecutive_ending_today() {
+        let mut h = make_habit();
+        h.completions = vec![dt(2026, 2, 28), dt(2026, 3, 1), dt(2026, 3, 2)];
+        h.recalculate_streak(date(2026, 3, 2));
+        assert_eq!(h.streak, 3);
+    }
+
+    #[test]
+    fn streak_consecutive_ending_yesterday() {
+        let mut h = make_habit();
+        h.completions = vec![dt(2026, 2, 28), dt(2026, 3, 1)];
+        h.recalculate_streak(date(2026, 3, 2));
+        assert_eq!(h.streak, 2);
+    }
+
+    #[test]
+    fn streak_broken() {
+        let mut h = make_habit();
+        // 3-day streak, gap, then 2-day streak ending yesterday
+        h.completions = vec![
+            dt(2026, 2, 24), dt(2026, 2, 25), dt(2026, 2, 26),
+            // gap on 27
+            dt(2026, 3, 1),
+        ];
+        h.recalculate_streak(date(2026, 3, 2));
+        assert_eq!(h.streak, 1);
+        assert_eq!(h.best_streak, 3);
+    }
+
+    #[test]
+    fn is_due_today_incomplete() {
+        let h = make_habit();
+        assert!(h.is_due(date(2026, 3, 2)));
+    }
+
+    #[test]
+    fn is_due_today_complete() {
+        let mut h = make_habit();
+        h.completions = vec![dt(2026, 3, 2)];
+        assert!(!h.is_due(date(2026, 3, 2)));
+    }
+}

@@ -59,3 +59,78 @@ impl DayPlan {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn today() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 3, 2).unwrap()
+    }
+
+    #[test]
+    fn new_plan_defaults() {
+        let plan = DayPlan::new(today());
+        assert_eq!(plan.spoon_budget, 50);
+        assert_eq!(plan.spent_spoons, 0);
+        assert!(plan.confirmed_task_ids.is_empty());
+        assert!(plan.completed_tasks.is_empty());
+    }
+
+    #[test]
+    fn complete_task_adds_spoons() {
+        let mut plan = DayPlan::new(today());
+        let id = Uuid::new_v4();
+        plan.confirmed_task_ids.push(id);
+        plan.complete_task(id, "Test".into(), Some(15));
+        assert_eq!(plan.spent_spoons, 15);
+        assert_eq!(plan.completed_tasks.len(), 1);
+        assert!(!plan.confirmed_task_ids.contains(&id));
+    }
+
+    #[test]
+    fn complete_task_no_esc() {
+        let mut plan = DayPlan::new(today());
+        let id = Uuid::new_v4();
+        plan.complete_task(id, "Test".into(), None);
+        assert_eq!(plan.spent_spoons, 0);
+        assert_eq!(plan.completed_tasks.len(), 1);
+    }
+
+    #[test]
+    fn uncomplete_task_restores_spoons() {
+        let mut plan = DayPlan::new(today());
+        let id = Uuid::new_v4();
+        plan.complete_task(id, "Test".into(), Some(20));
+        assert_eq!(plan.spent_spoons, 20);
+        plan.uncomplete_task(id);
+        assert_eq!(plan.spent_spoons, 0);
+        assert!(plan.confirmed_task_ids.contains(&id));
+        assert!(plan.completed_tasks.is_empty());
+    }
+
+    #[test]
+    fn uncomplete_nonexistent_task_noop() {
+        let mut plan = DayPlan::new(today());
+        plan.complete_task(Uuid::new_v4(), "Test".into(), Some(10));
+        let before = plan.spent_spoons;
+        plan.uncomplete_task(Uuid::new_v4()); // different id
+        assert_eq!(plan.spent_spoons, before);
+    }
+
+    #[test]
+    fn is_stale() {
+        let plan = DayPlan::new(today());
+        assert!(!plan.is_stale(today()));
+        let tomorrow = today() + chrono::Duration::days(1);
+        assert!(plan.is_stale(tomorrow));
+    }
+
+    #[test]
+    fn remaining_budget_saturates() {
+        let mut plan = DayPlan::new(today());
+        plan.spoon_budget = 10;
+        plan.spent_spoons = 15;
+        assert_eq!(plan.remaining_budget(), 0);
+    }
+}
