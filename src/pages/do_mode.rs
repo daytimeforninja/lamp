@@ -98,7 +98,7 @@ pub fn do_mode_view<'a>(
                 }
 
                 let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
-                let note_input = text_input::text_input("Add a note...", input_value)
+                let note_input = text_input::text_input(fl!("task-note-placeholder"), input_value)
                     .on_input(move |v| Message::NoteInputChanged(id, v))
                     .on_submit(move |_| Message::AppendNote(id))
                     .width(Length::Fill);

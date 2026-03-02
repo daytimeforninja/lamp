@@ -7,6 +7,7 @@ use cosmic::Element;
 use crate::core::day_plan::DayPlan;
 use crate::core::list_item::ListItem;
 use crate::core::task::{Priority, Task, TaskState};
+use crate::fl;
 use crate::message::Message;
 
 const BUDGET_PRESETS: &[u32] = &[5, 10, 20, 30, 50, 75, 100];
@@ -85,7 +86,7 @@ pub fn daily_planning_view<'a>(
         .collect();
 
     if !due_today.is_empty() {
-        content = content.push(text::title4("Due / Scheduled Today"));
+        content = content.push(text::title4(fl!("planning-due-today")));
         let mut due_col = column().spacing(4);
         for task in &due_today {
             let id = task.id;

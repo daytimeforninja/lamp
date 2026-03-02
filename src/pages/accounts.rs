@@ -53,11 +53,11 @@ fn account_row(
     if confirming_delete {
         summary_row = summary_row
             .push(
-                button::destructive("Delete")
+                button::destructive(fl!("btn-delete"))
                     .on_press(Message::DeleteAccount(index)),
             )
             .push(
-                button::standard("Cancel")
+                button::standard(fl!("btn-cancel"))
                     .on_press(Message::CancelDeleteAccount),
             );
     } else {
@@ -75,9 +75,9 @@ fn account_row(
         // Name
         detail = detail.push(
             row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption("Name")).width(Length::Fixed(80.0)))
+                .push(container(text::caption(fl!("accounts-name"))).width(Length::Fixed(80.0)))
                 .push(
-                    text_input::text_input("Account name", account.name.clone())
+                    text_input::text_input(fl!("accounts-name-placeholder"), account.name.clone())
                         .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Name, v))
                         .on_submit(move |_| Message::ToggleAccountExpand(index))
                         .width(Length::Fill),
@@ -87,9 +87,9 @@ fn account_row(
         // URL
         detail = detail.push(
             row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption("URL")).width(Length::Fixed(80.0)))
+                .push(container(text::caption(fl!("accounts-url"))).width(Length::Fixed(80.0)))
                 .push(
-                    text_input::text_input("https://...", account.url.clone())
+                    text_input::text_input(fl!("contacts-url-placeholder"), account.url.clone())
                         .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Url, v))
                         .on_submit(move |_| Message::ToggleAccountExpand(index))
                         .width(Length::Fill),
@@ -103,9 +103,9 @@ fn account_row(
         // Notes
         detail = detail.push(
             row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption("Notes")).width(Length::Fixed(80.0)))
+                .push(container(text::caption(fl!("accounts-notes"))).width(Length::Fixed(80.0)))
                 .push(
-                    text_input::text_input("Notes...", account.notes.clone())
+                    text_input::text_input(fl!("accounts-notes-placeholder"), account.notes.clone())
                         .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Notes, v))
                         .on_submit(move |_| Message::ToggleAccountExpand(index))
                         .width(Length::Fill),

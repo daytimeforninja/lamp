@@ -81,21 +81,21 @@ fn card_back(
 
     col = col.push(text::body(contact.name.clone()));
 
-    if let Some(line) = detail_line("Email", &contact.email) {
+    if let Some(line) = detail_line(&fl!("contacts-email"), &contact.email) {
         col = col.push(line);
     }
-    if let Some(line) = detail_line("Phone", &contact.phone) {
+    if let Some(line) = detail_line(&fl!("contacts-phone"), &contact.phone) {
         col = col.push(line);
     }
-    if let Some(line) = detail_line("Website", &contact.website) {
+    if let Some(line) = detail_line(&fl!("contacts-website"), &contact.website) {
         col = col.push(line);
     }
-    if let Some(line) = detail_line("Signal", &contact.signal) {
+    if let Some(line) = detail_line(&fl!("contacts-signal"), &contact.signal) {
         col = col.push(line);
     }
 
     col = col.push(
-        button::suggested("Done")
+        button::suggested(fl!("btn-done"))
             .on_press(Message::FlipContact(index)),
     );
 
@@ -105,7 +105,7 @@ fn card_back(
     );
 
     col = col.push(
-        button::standard("Edit")
+        button::standard(fl!("btn-edit"))
             .on_press(Message::EditContact(index)),
     );
 
@@ -114,11 +114,11 @@ fn card_back(
             row()
                 .spacing(8)
                 .push(
-                    button::destructive("Delete")
+                    button::destructive(fl!("btn-delete"))
                         .on_press(Message::DeleteContact(index)),
                 )
                 .push(
-                    button::standard("Cancel")
+                    button::standard(fl!("btn-cancel"))
                         .on_press(Message::CancelDeleteContact),
                 ),
         );
@@ -139,7 +139,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
 
     let email_val = contact.email.clone().unwrap_or_default();
     col = col.push(
-        text_input::text_input("email@example.com", email_val)
+        text_input::text_input(fl!("contacts-email-placeholder"), email_val)
             .on_input(move |v| Message::SetContactField(index, ContactField::Email, v))
             .on_submit(move |_| Message::FlipContact(index))
             .width(Length::Fill),
@@ -147,7 +147,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
 
     let phone_val = contact.phone.clone().unwrap_or_default();
     col = col.push(
-        text_input::text_input("+1-555-0000", phone_val)
+        text_input::text_input(fl!("contacts-phone-placeholder"), phone_val)
             .on_input(move |v| Message::SetContactField(index, ContactField::Phone, v))
             .on_submit(move |_| Message::FlipContact(index))
             .width(Length::Fill),
@@ -155,7 +155,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
 
     let website_val = contact.website.clone().unwrap_or_default();
     col = col.push(
-        text_input::text_input("https://...", website_val)
+        text_input::text_input(fl!("contacts-url-placeholder"), website_val)
             .on_input(move |v| Message::SetContactField(index, ContactField::Website, v))
             .on_submit(move |_| Message::FlipContact(index))
             .width(Length::Fill),
@@ -163,7 +163,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
 
     let signal_val = contact.signal.clone().unwrap_or_default();
     col = col.push(
-        text_input::text_input("username", signal_val)
+        text_input::text_input(fl!("contacts-signal-placeholder"), signal_val)
             .on_input(move |v| Message::SetContactField(index, ContactField::Signal, v))
             .on_submit(move |_| Message::FlipContact(index))
             .width(Length::Fill),
@@ -176,7 +176,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
         row()
             .spacing(8)
             .align_y(Alignment::Center)
-            .push(text::caption("Preferred"))
+            .push(text::caption(fl!("contacts-preferred-label")))
             .push(
                 dropdown(pref_labels, pref_selected, move |idx| {
                     let val = index_to_preferred(idx).unwrap_or_default();
@@ -196,7 +196,7 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
         row()
             .spacing(8)
             .align_y(Alignment::Center)
-            .push(text::caption("Category"))
+            .push(text::caption(fl!("contacts-category")))
             .push(
                 dropdown(cat_labels, cat_selected, move |idx| {
                     let cat = if idx == 1 {

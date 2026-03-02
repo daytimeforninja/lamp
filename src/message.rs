@@ -1,6 +1,7 @@
 use chrono::NaiveDate;
 
 use crate::config::CalendarPurpose;
+use crate::fl;
 use crate::core::link::LinkTarget;
 use crate::core::task::{Priority, TaskState};
 use crate::sync::caldav::CalendarInfo;
@@ -293,25 +294,25 @@ pub enum WhatPage {
 }
 
 impl WhatPage {
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> String {
         match self {
-            Self::DailyPlanning => "Daily Planning",
-            Self::Inbox => "Inbox",
-            Self::AllTasks => "All Tasks",
-            Self::NextActions => "Next Actions",
-            Self::Projects => "Projects",
-            Self::Waiting => "Waiting For",
-            Self::Someday => "Someday/Maybe",
-            Self::Habits => "Habits",
-            Self::Conflicts => "Conflicts",
-            Self::Review => "Weekly Review",
-            Self::Tickler => "Agenda",
-            Self::Media => "Media",
-            Self::Shopping => "Shopping",
-            Self::Contacts => "Contacts",
-            Self::Accounts => "Accounts",
-            Self::Notes => "Notes",
-            Self::Settings => "Settings",
+            Self::DailyPlanning => fl!("nav-daily-planning"),
+            Self::Inbox => fl!("nav-inbox"),
+            Self::AllTasks => fl!("nav-all-tasks"),
+            Self::NextActions => fl!("nav-next-actions"),
+            Self::Projects => fl!("nav-projects"),
+            Self::Waiting => fl!("nav-waiting"),
+            Self::Someday => fl!("nav-someday"),
+            Self::Habits => fl!("nav-habits"),
+            Self::Conflicts => fl!("conflicts-empty"),
+            Self::Review => fl!("nav-review"),
+            Self::Tickler => fl!("nav-agenda"),
+            Self::Media => fl!("nav-media"),
+            Self::Shopping => fl!("nav-shopping"),
+            Self::Contacts => fl!("nav-contacts"),
+            Self::Accounts => fl!("nav-accounts"),
+            Self::Notes => fl!("nav-notes"),
+            Self::Settings => fl!("nav-settings"),
         }
     }
 

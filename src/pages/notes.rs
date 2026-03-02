@@ -169,7 +169,7 @@ fn card_back(
 
     // Action buttons
     col = col.push(
-        button::standard("Edit").on_press(Message::EditNote(note_id)),
+        button::standard(fl!("btn-edit")).on_press(Message::EditNote(note_id)),
     );
 
     col = col.push(
@@ -182,11 +182,11 @@ fn card_back(
             row()
                 .spacing(8)
                 .push(
-                    button::destructive("Delete")
+                    button::destructive(fl!("btn-delete"))
                         .on_press(Message::DeleteNote(note_id)),
                 )
                 .push(
-                    button::standard("Cancel")
+                    button::standard(fl!("btn-cancel"))
                         .on_press(Message::CancelDeleteNote),
                 ),
         );
@@ -235,7 +235,7 @@ fn card_edit<'a>(
 
     // Title
     col = col.push(
-        text_input::text_input("Title", buf_title)
+        text_input::text_input(fl!("notes-title-placeholder"), buf_title)
             .on_input(move |v| Message::SetNoteField(note_id, NoteField::Title, v))
             .width(Length::Fill),
     );
@@ -256,7 +256,7 @@ fn card_edit<'a>(
 
     // Tags
     col = col.push(
-        text_input::text_input("Tags (comma-separated)", buf_tags)
+        text_input::text_input(fl!("notes-tags-placeholder"), buf_tags)
             .on_input(move |v| Message::SetNoteField(note_id, NoteField::Tags, v))
             .width(Length::Fill),
     );
@@ -283,7 +283,7 @@ fn card_edit<'a>(
                     .into()
             })
             .collect();
-        col = col.push(text::caption("Pick from media:").size(11.0));
+        col = col.push(text::caption(fl!("notes-pick-media")).size(11.0));
         col = col.push(flex_row(media_chips).row_spacing(4).column_spacing(4));
     }
 
@@ -420,7 +420,7 @@ fn card_edit<'a>(
 
     // Done button to confirm and exit edit mode
     col = col.push(
-        button::suggested("Done")
+        button::suggested(fl!("btn-done"))
             .on_press(Message::FlipNote(note_id)),
     );
 

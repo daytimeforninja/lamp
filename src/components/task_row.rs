@@ -8,6 +8,7 @@ use cosmic::widget::{button, checkbox, column, container, dropdown, icon, row, t
 use cosmic::{Element, theme};
 
 use crate::core::task::{Priority, Task, TaskState};
+use crate::fl;
 use crate::message::{Message, SortColumn};
 
 const STATE_LABELS: &[&str] = &["TODO", "NEXT", "WAIT", "SOME"];
@@ -196,19 +197,19 @@ fn header_row(has_projects: bool, sortable: bool, sort: Option<(SortColumn, bool
         .spacing(8)
         .align_y(Alignment::Center)
         .push(col(COL_CHECK, text::caption("")))
-        .push(header_label("State", COL_STATE, sortable, sort, SortColumn::State))
-        .push(header_label("Pri", COL_PRI, sortable, sort, SortColumn::Priority))
-        .push(header_label_fill("Title", sortable, sort, SortColumn::Title))
-        .push(header_label("Context", COL_CTX, sortable, sort, SortColumn::Context));
+        .push(header_label(&fl!("col-state"), COL_STATE, sortable, sort, SortColumn::State))
+        .push(header_label(&fl!("col-priority"), COL_PRI, sortable, sort, SortColumn::Priority))
+        .push(header_label_fill(&fl!("col-title"), sortable, sort, SortColumn::Title))
+        .push(header_label(&fl!("col-context"), COL_CTX, sortable, sort, SortColumn::Context));
 
     if has_projects {
-        r = r.push(col(COL_PROJECT, text::caption("Project".to_string())));
+        r = r.push(col(COL_PROJECT, text::caption(fl!("col-project"))));
     }
 
     r = r
-        .push(header_label("ESC", COL_ESC, sortable, sort, SortColumn::Esc))
-        .push(header_label("Sched", COL_DATE, sortable, sort, SortColumn::Scheduled))
-        .push(header_label("Due", COL_DATE, sortable, sort, SortColumn::Deadline))
+        .push(header_label(&fl!("esc-column"), COL_ESC, sortable, sort, SortColumn::Esc))
+        .push(header_label(&fl!("col-scheduled"), COL_DATE, sortable, sort, SortColumn::Scheduled))
+        .push(header_label(&fl!("col-deadline"), COL_DATE, sortable, sort, SortColumn::Deadline))
         .push(col(COL_DELETE, text::caption("")));
 
     r.width(Length::Fill).into()
@@ -466,7 +467,7 @@ fn task_row(
         }
 
         // Editable title (Enter to confirm + collapse)
-        let title_input = text_input::text_input("Task title...", task.title.clone())
+        let title_input = text_input::text_input(fl!("task-title-placeholder"), task.title.clone())
             .on_input(move |v| Message::UpdateTaskTitle(id, v))
             .on_submit(move |_| Message::ToggleTaskExpand(id))
             .width(Length::Fill);
@@ -480,7 +481,7 @@ fn task_row(
             );
         }
 
-        let note_input = text_input::text_input("Add a note...", input_value)
+        let note_input = text_input::text_input(fl!("task-note-placeholder"), input_value)
             .on_input(move |v| Message::NoteInputChanged(id, v))
             .on_submit(move |_| Message::AppendNote(id))
             .width(Length::Fill);

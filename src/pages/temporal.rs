@@ -323,12 +323,12 @@ fn event_form_view(
             row()
                 .spacing(8)
                 .push(
-                    text_input::text_input("YYYY-MM-DD", start_date.clone())
+                    text_input::text_input(fl!("event-date-placeholder"), start_date.clone())
                         .on_input(|v| Message::SetEventStart(v))
                         .width(Length::Fill),
                 )
                 .push(
-                    text_input::text_input("HH:MM", start_time.clone())
+                    text_input::text_input(fl!("event-time-placeholder"), start_time.clone())
                         .on_input(|v| Message::SetEventStartTime(v))
                         .width(Length::Fixed(80.0)),
                 ),
@@ -348,12 +348,12 @@ fn event_form_view(
             row()
                 .spacing(8)
                 .push(
-                    text_input::text_input("YYYY-MM-DD", end_date.clone())
+                    text_input::text_input(fl!("event-date-placeholder"), end_date.clone())
                         .on_input(|v| Message::SetEventEnd(v))
                         .width(Length::Fill),
                 )
                 .push(
-                    text_input::text_input("HH:MM", end_time.clone())
+                    text_input::text_input(fl!("event-time-placeholder"), end_time.clone())
                         .on_input(|v| Message::SetEventEndTime(v))
                         .width(Length::Fixed(80.0)),
                 ),

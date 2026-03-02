@@ -20,7 +20,7 @@ pub fn settings_view<'a>(
     let mut content = column().spacing(12);
 
     // --- Contexts ---
-    content = content.push(text::title4("Contexts"));
+    content = content.push(text::title4(crate::fl!("settings-contexts")));
 
     for (idx, ctx) in config.contexts.iter().enumerate() {
         content = content.push(
@@ -35,7 +35,7 @@ pub fn settings_view<'a>(
         );
     }
 
-    let input = text_input::text_input("New context (e.g. gym)", settings_context_input)
+    let input = text_input::text_input(crate::fl!("settings-context-placeholder"), settings_context_input)
         .on_input(Message::SettingsContextInput)
         .on_submit(|_| Message::SettingsAddContext)
         .width(Length::Fill);

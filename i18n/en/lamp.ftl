@@ -240,3 +240,65 @@ settings-ai-api-key = Anthropic API Key
 
 # Search
 search-placeholder = Search...
+
+# Shared buttons
+btn-done = Done
+btn-edit = Edit
+btn-delete = Delete
+btn-cancel = Cancel
+btn-close = Close
+btn-save = Save
+
+# Contacts fields
+contacts-email = Email
+contacts-phone = Phone
+contacts-signal = Signal
+contacts-website = Website
+contacts-preferred-label = Preferred
+contacts-category = Category
+contacts-email-placeholder = email@example.com
+contacts-phone-placeholder = +1-555-0000
+contacts-url-placeholder = https://...
+contacts-signal-placeholder = username
+
+# Accounts fields
+accounts-name = Name
+accounts-url = URL
+accounts-notes = Notes
+accounts-name-placeholder = Account name
+accounts-notes-placeholder = Notes...
+
+# Notes fields
+notes-title-placeholder = Title
+notes-tags-placeholder = Tags (comma-separated)
+notes-pick-media = Pick from media:
+
+# Task row
+col-state = State
+col-priority = Pri
+col-title = Title
+col-context = Context
+col-project = Project
+col-scheduled = Sched
+col-deadline = Due
+task-note-placeholder = Add a note...
+task-title-placeholder = Task title...
+
+# Settings
+settings-context-placeholder = New context (e.g. gym)
+settings-contexts = Contexts
+
+# Temporal / Event form
+event-date-placeholder = YYYY-MM-DD
+event-time-placeholder = HH:MM
+
+# Daily planning
+planning-due-today = Due / Scheduled Today
+
+# Lists
+list-consumed = Consumed
+list-bought = Bought
+
+# Navigation (additional)
+nav-agenda = Agenda
+nav-settings = Settings

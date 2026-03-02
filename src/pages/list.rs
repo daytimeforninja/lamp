@@ -10,10 +10,10 @@ use crate::message::{ListKind, Message};
 
 const CARD_WIDTH: f32 = 280.0;
 
-fn done_label(kind: ListKind) -> &'static str {
+fn done_label(kind: ListKind) -> String {
     match kind {
-        ListKind::Media => "Consumed",
-        ListKind::Shopping => "Bought",
+        ListKind::Media => crate::fl!("list-consumed"),
+        ListKind::Shopping => crate::fl!("list-bought"),
     }
 }
 
@@ -21,7 +21,7 @@ fn card_front(item: &ListItem, kind: ListKind) -> Element<'static, Message> {
     let mut col = column().spacing(4);
 
     if item.done {
-        col = col.push(text::caption(format!("{} {}", done_label(kind), item.title)));
+        col = col.push(text::caption(format!("{} {}", &done_label(kind), item.title)));
     } else {
         col = col.push(text::body(item.title.clone()));
     }
@@ -58,7 +58,7 @@ fn card_back(
 
     // Note input
     let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
-    let note_input = text_input::text_input("Add a note...", input_value)
+    let note_input = text_input::text_input(crate::fl!("task-note-placeholder"), input_value)
         .on_input(move |v| Message::NoteInputChanged(id, v))
         .on_submit(move |_| Message::AppendNote(id))
         .width(Length::Fill);
@@ -66,9 +66,9 @@ fn card_back(
 
     // Consumed/Bought toggle
     let toggle_label = if item.done {
-        format!("Undo {}", done_label(kind).to_lowercase())
+        format!("Undo {}", &done_label(kind).to_lowercase())
     } else {
-        done_label(kind).to_string()
+        done_label(kind)
     };
     if item.done {
         col = col.push(
@@ -84,7 +84,7 @@ fn card_back(
 
     // Close
     col = col.push(
-        button::standard("Close")
+        button::standard(crate::fl!("btn-close"))
             .on_press(Message::FlipListItem(id)),
     );
 
@@ -94,11 +94,11 @@ fn card_back(
             row()
                 .spacing(8)
                 .push(
-                    button::destructive("Delete")
+                    button::destructive(crate::fl!("btn-delete"))
                         .on_press(Message::DeleteListItem(kind, id)),
                 )
                 .push(
-                    button::standard("Cancel")
+                    button::standard(crate::fl!("btn-cancel"))
                         .on_press(Message::CancelDeleteListItem),
                 ),
         );
