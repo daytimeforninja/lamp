@@ -50,15 +50,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let journal = systemd_journal_logger::JournalLog::new()
-            .unwrap()
-            .with_syslog_identifier("lamp".to_string());
-
         lamp::set_debug_logging(config.debug_logging);
 
-        log::set_boxed_logger(Box::new(FilteredJournal { inner: journal })).unwrap();
-        // Global max must be Debug so lamp debug logs can pass through when toggled
-        log::set_max_level(log::LevelFilter::Debug);
+        match systemd_journal_logger::JournalLog::new() {
+            Ok(journal) => {
+                let journal = journal.with_syslog_identifier("lamp".to_string());
+                if log::set_boxed_logger(Box::new(FilteredJournal { inner: journal })).is_ok() {
+                    // Global max must be Debug so lamp debug logs can pass through when toggled
+                    log::set_max_level(log::LevelFilter::Debug);
+                }
+            }
+            Err(e) => {
+                eprintln!("lamp: failed to initialize journal logger: {e}");
+                log::set_max_level(log::LevelFilter::Off);
+            }
+        }
     }
 
     localize::localize();

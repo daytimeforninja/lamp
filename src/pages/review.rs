@@ -154,7 +154,10 @@ pub fn review_view(
     if !upcoming_tasks.is_empty() {
         let mut upcoming_col = column().spacing(2).padding([0, 0, 0, 28]);
         for task in &upcoming_tasks {
-            let date = task.scheduled.or(task.deadline).unwrap();
+            let date = match task.scheduled.or(task.deadline) {
+                Some(d) => d,
+                None => continue,
+            };
             let label = format!("{} — {}", date.format("%b %d"), task.title);
             upcoming_col = upcoming_col.push(text::body(label).size(13.0));
         }

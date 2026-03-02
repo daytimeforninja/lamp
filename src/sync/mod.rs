@@ -148,7 +148,7 @@ impl SyncEngine {
                     let remote_task = match vcalendar_to_task(&remote_vtodo.ical_body) {
                         Some(t) => t,
                         None => {
-                            log::debug!("Skipping unparseable VTODO: {}", remote_vtodo.href);
+                            log::warn!("Skipping unparseable VTODO: {}", remote_vtodo.href);
                             continue;
                         }
                     };
@@ -249,7 +249,7 @@ impl SyncEngine {
             let remote_task = match vcalendar_to_task(&remote_vtodo.ical_body) {
                 Some(t) => t,
                 None => {
-                    log::debug!("Skipping unparseable VTODO: {}", remote_vtodo.href);
+                    log::warn!("Skipping unparseable VTODO: {}", remote_vtodo.href);
                     continue;
                 }
             };

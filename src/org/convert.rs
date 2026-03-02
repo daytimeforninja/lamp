@@ -87,13 +87,13 @@ pub fn extract_projects(headings: &[ParsedHeading]) -> Vec<Project> {
                 .to_string();
             proj.brainstorm = heading.notes.clone();
             current_project = Some(proj);
-        } else if heading.level == 2 && current_project.is_some() {
-            // Task under current project
-            let mut task = heading_to_task(heading);
-            if let Some(ref proj) = current_project {
+        } else if heading.level == 2 {
+            if let Some(ref mut proj) = current_project {
+                // Task under current project
+                let mut task = heading_to_task(heading);
                 task.project = Some(proj.name.clone());
+                proj.tasks.push(task);
             }
-            current_project.as_mut().unwrap().tasks.push(task);
         } else if heading.level == 1 && heading.state.is_some() {
             // Standalone task with state at level 1 — close current project
             if let Some(proj) = current_project.take() {

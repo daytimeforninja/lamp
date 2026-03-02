@@ -2,12 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 #[tokio::main]
 async fn main() {
-    systemd_journal_logger::JournalLog::new()
-        .unwrap()
-        .with_syslog_identifier("lamp-sync-check".to_string())
-        .install()
-        .unwrap();
-    log::set_max_level(log::LevelFilter::Info);
+    if let Ok(journal) = systemd_journal_logger::JournalLog::new() {
+        if journal
+            .with_syslog_identifier("lamp-sync-check".to_string())
+            .install()
+            .is_ok()
+        {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    }
 
     // Load config
     let cosmic_cfg = cosmic::cosmic_config::Config::new("dev.lamp.app", lamp::config::CONFIG_VERSION)

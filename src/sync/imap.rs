@@ -95,12 +95,18 @@ pub async fn fetch_emails(
         let uid = msg.uid.unwrap_or(0);
         let body = match msg.body() {
             Some(b) => b,
-            None => continue,
+            None => {
+                log::warn!("IMAP message uid={} has no body, skipping", uid);
+                continue;
+            }
         };
 
         let parsed = match mail_parser::MessageParser::default().parse(body) {
             Some(p) => p,
-            None => continue,
+            None => {
+                log::warn!("IMAP message uid={} failed to parse, skipping", uid);
+                continue;
+            }
         };
 
         let subject = parsed

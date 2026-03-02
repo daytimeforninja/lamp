@@ -1477,10 +1477,20 @@ impl Application for Lamp {
                     task.project = form.project.clone();
                     task.scheduled = chrono::NaiveDate::parse_from_str(
                         form.scheduled.trim(), "%Y-%m-%d"
-                    ).ok();
+                    ).map_err(|e| {
+                        if !form.scheduled.trim().is_empty() {
+                            log::warn!("Invalid scheduled date '{}': {}", form.scheduled.trim(), e);
+                        }
+                        e
+                    }).ok();
                     task.deadline = chrono::NaiveDate::parse_from_str(
                         form.deadline.trim(), "%Y-%m-%d"
-                    ).ok();
+                    ).map_err(|e| {
+                        if !form.deadline.trim().is_empty() {
+                            log::warn!("Invalid deadline date '{}': {}", form.deadline.trim(), e);
+                        }
+                        e
+                    }).ok();
                     task.notes = form.notes.trim().to_string();
 
                     if let Some(ref project_name) = task.project {
