@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use cosmic::app::Settings;
 use cosmic::cosmic_config::CosmicConfigEntry;
 use cosmic::iced::Limits;

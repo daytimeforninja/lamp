@@ -38,6 +38,7 @@ pub enum AccountField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteField {
     Title,
+    #[allow(dead_code)]
     Body,
     Tags,
     Source,
@@ -50,6 +51,7 @@ pub enum AppMode {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Message {
     // Navigation
     SelectWhen(WhenPage),
@@ -372,6 +374,7 @@ impl WhatPage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum WhenPage {
     Today,
     Tomorrow,
@@ -379,6 +382,7 @@ pub enum WhenPage {
     Upcoming,
 }
 
+#[allow(dead_code)]
 impl WhenPage {
     pub fn title(&self) -> &'static str {
         match self {
@@ -411,5 +415,6 @@ pub enum SortColumn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     What(WhatPage),
+    #[allow(dead_code)]
     When(WhenPage),
 }
