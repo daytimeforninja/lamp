@@ -559,7 +559,7 @@ pub async fn sync_all(
     events: &[CalendarEvent],
     task_cals: &[String],
     event_cals: &[String],
-    sync_tokens: &[(String, String)],
+    sync_tokens: &std::collections::HashMap<String, String>,
     pending_completions: &[(String, String)],
     pending_deletions: &[String],
 ) -> Result<SyncResult, String> {
@@ -606,10 +606,7 @@ pub async fn sync_all(
     // to avoid creating duplicates across multiple calendars.
     let first_task_cal = task_cals.first().cloned();
     for cal_href in task_cals {
-        let token = sync_tokens
-            .iter()
-            .find(|(h, _)| h == cal_href)
-            .map(|(_, t)| t.as_str());
+        let token = sync_tokens.get(cal_href.as_str()).map(|t| t.as_str());
 
         // Filter tasks for this calendar: include tasks that have sync_href on this calendar,
         // plus new tasks (no sync_href) only for the first task calendar.
@@ -739,10 +736,7 @@ pub async fn sync_all(
 
     // Sync events from each event calendar
     for cal_href in event_cals {
-        let token = sync_tokens
-            .iter()
-            .find(|(h, _)| h == cal_href)
-            .map(|(_, t)| t.as_str());
+        let token = sync_tokens.get(cal_href.as_str()).map(|t| t.as_str());
 
         let engine = SyncEngine::new(client.clone(), cal_href.clone());
         match engine.sync_events(events, token).await {

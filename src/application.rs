@@ -27,6 +27,15 @@ use crate::sync::carddav::Contact;
 use crate::sync::imap::ImapEmail;
 use crate::sync::{SyncConflict, SyncStatus};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskLocation {
+    Inbox,
+    Next,
+    Waiting,
+    Someday,
+    Project(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextDrawerState {
     NewTask,
@@ -131,6 +140,8 @@ pub struct Lamp {
 
     // Cached for today view (rebuilt on data changes)
     all_tasks_cache: Vec<Task>,
+    // Task location index for O(1) lookups
+    task_index: HashMap<uuid::Uuid, TaskLocation>,
 
     // List items
     media_items: Vec<ListItem>,
@@ -324,6 +335,7 @@ impl Application for Lamp {
             day_plan,
             rejected_suggestions: HashSet::new(),
             all_tasks_cache: Vec::new(),
+            task_index: HashMap::new(),
             all_tasks_sort: None,
             context_drawer_state,
             new_task_form: NewTaskForm::default(),
@@ -2974,6 +2986,28 @@ impl Lamp {
 
     fn rebuild_cache(&mut self) {
         self.all_tasks_cache = self.all_active_tasks();
+        self.rebuild_task_index();
+    }
+
+    fn rebuild_task_index(&mut self) {
+        self.task_index.clear();
+        for task in &self.inbox_tasks {
+            self.task_index.insert(task.id, TaskLocation::Inbox);
+        }
+        for task in &self.next_tasks {
+            self.task_index.insert(task.id, TaskLocation::Next);
+        }
+        for task in &self.waiting_tasks {
+            self.task_index.insert(task.id, TaskLocation::Waiting);
+        }
+        for task in &self.someday_tasks {
+            self.task_index.insert(task.id, TaskLocation::Someday);
+        }
+        for project in &self.projects {
+            for task in &project.tasks {
+                self.task_index.insert(task.id, TaskLocation::Project(project.name.clone()));
+            }
+        }
     }
 
     fn all_active_tasks(&self) -> Vec<Task> {
@@ -3073,79 +3107,67 @@ impl Lamp {
     }
 
     fn set_task_priority(&mut self, id: uuid::Uuid, priority: Option<crate::core::task::Priority>) {
-        fn set_in_list(list: &mut [Task], id: uuid::Uuid, priority: Option<crate::core::task::Priority>) -> bool {
+        let list = match self.task_index.get(&id) {
+            Some(TaskLocation::Inbox) => Some(&mut self.inbox_tasks as &mut Vec<Task>),
+            Some(TaskLocation::Next) => Some(&mut self.next_tasks),
+            Some(TaskLocation::Waiting) => Some(&mut self.waiting_tasks),
+            Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
+            Some(TaskLocation::Project(name)) => {
+                let name = name.clone();
+                self.projects.iter_mut()
+                    .find(|p| p.name == name)
+                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+            }
+            None => None,
+        };
+        if let Some(list) = list {
             if let Some(task) = list.iter_mut().find(|t| t.id == id) {
                 task.priority = priority;
-                return true;
+                self.save_all();
             }
-            false
-        }
-
-        let mut found = set_in_list(&mut self.inbox_tasks, id, priority)
-            || set_in_list(&mut self.next_tasks, id, priority)
-            || set_in_list(&mut self.waiting_tasks, id, priority)
-            || set_in_list(&mut self.someday_tasks, id, priority);
-
-        if !found {
-            for project in &mut self.projects {
-                if set_in_list(&mut project.tasks, id, priority) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if found {
-            self.save_all();
         }
     }
 
     /// Find a task across all lists, apply a mutation, and save.
     fn modify_task(&mut self, id: uuid::Uuid, f: impl FnOnce(&mut Task)) {
-        fn find_and_modify(list: &mut [Task], id: uuid::Uuid, f: &mut Option<impl FnOnce(&mut Task)>) -> bool {
+        let list = match self.task_index.get(&id) {
+            Some(TaskLocation::Inbox) => Some(&mut self.inbox_tasks as &mut Vec<Task>),
+            Some(TaskLocation::Next) => Some(&mut self.next_tasks),
+            Some(TaskLocation::Waiting) => Some(&mut self.waiting_tasks),
+            Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
+            Some(TaskLocation::Project(name)) => {
+                let name = name.clone();
+                self.projects.iter_mut()
+                    .find(|p| p.name == name)
+                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+            }
+            None => None,
+        };
+        if let Some(list) = list {
             if let Some(task) = list.iter_mut().find(|t| t.id == id) {
-                if let Some(func) = f.take() {
-                    func(task);
-                }
-                return true;
+                f(task);
+                self.save_all();
             }
-            false
-        }
-
-        let mut f = Some(f);
-        let mut found = find_and_modify(&mut self.inbox_tasks, id, &mut f)
-            || find_and_modify(&mut self.next_tasks, id, &mut f)
-            || find_and_modify(&mut self.waiting_tasks, id, &mut f)
-            || find_and_modify(&mut self.someday_tasks, id, &mut f);
-
-        if !found {
-            for project in &mut self.projects {
-                if find_and_modify(&mut project.tasks, id, &mut f) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if found {
-            self.save_all();
         }
     }
 
     fn remove_task(&mut self, id: uuid::Uuid) -> Option<Task> {
-        for list in [
-            &mut self.inbox_tasks,
-            &mut self.next_tasks,
-            &mut self.waiting_tasks,
-            &mut self.someday_tasks,
-        ] {
+        let list = match self.task_index.get(&id) {
+            Some(TaskLocation::Inbox) => Some(&mut self.inbox_tasks as &mut Vec<Task>),
+            Some(TaskLocation::Next) => Some(&mut self.next_tasks),
+            Some(TaskLocation::Waiting) => Some(&mut self.waiting_tasks),
+            Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
+            Some(TaskLocation::Project(name)) => {
+                let name = name.clone();
+                self.projects.iter_mut()
+                    .find(|p| p.name == name)
+                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+            }
+            None => return None,
+        };
+        if let Some(list) = list {
             if let Some(pos) = list.iter().position(|t| t.id == id) {
                 return Some(list.remove(pos));
-            }
-        }
-        for project in &mut self.projects {
-            if let Some(pos) = project.tasks.iter().position(|t| t.id == id) {
-                return Some(project.tasks.remove(pos));
             }
         }
         None

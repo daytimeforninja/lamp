@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 pub const CONFIG_VERSION: u64 = 2;
 
@@ -75,8 +77,9 @@ pub struct LampConfig {
     #[serde(default)]
     pub imap: ImapConfig,
     pub calendar_assignments: Vec<CalendarAssignment>,
-    /// Sync tokens: (calendar_href, token)
-    pub sync_tokens: Vec<(String, String)>,
+    /// Sync tokens: calendar_href → token
+    #[serde(default)]
+    pub sync_tokens: HashMap<String, String>,
     #[serde(default = "default_browser_command")]
     pub browser_command: String,
     #[serde(default)]
@@ -93,7 +96,7 @@ impl Default for LampConfig {
             notes_sync: ServiceConfig::default(),
             imap: ImapConfig::default(),
             calendar_assignments: Vec::new(),
-            sync_tokens: Vec::new(),
+            sync_tokens: HashMap::new(),
             browser_command: default_browser_command(),
             debug_logging: false,
         }
@@ -193,24 +196,12 @@ impl LampConfig {
 
     /// Get sync token for a calendar.
     pub fn get_sync_token(&self, href: &str) -> Option<&str> {
-        self.sync_tokens
-            .iter()
-            .find(|(h, _)| h == href)
-            .map(|(_, t)| t.as_str())
+        self.sync_tokens.get(href).map(|t| t.as_str())
     }
 
     /// Set sync token for a calendar.
     pub fn set_sync_token(&mut self, href: &str, token: &str) {
-        if let Some(existing) = self
-            .sync_tokens
-            .iter_mut()
-            .find(|(h, _)| h == href)
-        {
-            existing.1 = token.to_string();
-        } else {
-            self.sync_tokens
-                .push((href.to_string(), token.to_string()));
-        }
+        self.sync_tokens.insert(href.to_string(), token.to_string());
     }
 
     /// Whether CalDAV is configured with at least one calendar assigned.
