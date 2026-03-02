@@ -11,14 +11,10 @@ use crate::core::task::{Task, TaskState};
 use crate::fl;
 use crate::message::Message;
 
-/// A task is "unprocessed" (belongs in inbox) if it's still Todo
-/// and has none of priority, contexts, project, or ESC set.
+/// A task is "unprocessed" (belongs in inbox) if it's Todo without a project.
+/// This matches the inbox page's `is_inbox_task` definition.
 fn is_unprocessed(task: &Task) -> bool {
-    task.state == TaskState::Todo
-        && task.priority.is_none()
-        && task.contexts.is_empty()
-        && task.project.is_none()
-        && task.esc.is_none()
+    task.state == TaskState::Todo && task.project.is_none()
 }
 
 pub fn review_view(

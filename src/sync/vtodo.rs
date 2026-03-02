@@ -241,19 +241,23 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
         esc: lamp_esc,
         delegated: lamp_delegated,
         follow_up: lamp_follow_up,
+        extra_tags: Vec::new(),
+        scheduled_time: None,
+        deadline_time: None,
+        logbook_entries: Vec::new(),
         sync_href: None,
         sync_hash: None,
         sync_uid: uid_raw,
+        sync_etag: None,
     })
 }
 
-/// Compute a content hash for a task (for change detection).
-/// Hashes the fields that matter for sync, excluding sync metadata itself.
+/// Compute a deterministic content hash for a task (for change detection).
+/// Uses a string-based approach so the hash is stable across Rust versions and compilations.
 pub fn task_content_hash(task: &Task) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = StableHasher::new();
     task.title.hash(&mut hasher);
     task.state.as_keyword().hash(&mut hasher);
     task.priority.map(|p| p.as_org()).hash(&mut hasher);
@@ -268,6 +272,32 @@ pub fn task_content_hash(task: &Task) -> u64 {
     task.follow_up.map(|d| d.to_string()).hash(&mut hasher);
     task.recurrence.as_ref().map(|r| r.to_string()).hash(&mut hasher);
     hasher.finish()
+}
+
+/// A simple FNV-1a hasher that produces deterministic results across Rust versions.
+pub struct StableHasher {
+    hash: u64,
+}
+
+impl StableHasher {
+    pub fn new() -> Self {
+        Self {
+            hash: 0xcbf29ce484222325, // FNV offset basis
+        }
+    }
+}
+
+impl std::hash::Hasher for StableHasher {
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.hash ^= byte as u64;
+            self.hash = self.hash.wrapping_mul(0x100000001b3); // FNV prime
+        }
+    }
 }
 
 #[cfg(test)]

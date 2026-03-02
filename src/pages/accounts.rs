@@ -125,7 +125,7 @@ fn account_row(
 }
 
 pub fn accounts_view(
-    accounts: &[Account],
+    accounts: &[(usize, &Account)],
     account_input: &str,
     expanded_account: Option<usize>,
     pending_delete: Option<usize>,
@@ -157,7 +157,7 @@ pub fn accounts_view(
                 .width(Length::Fill),
         );
     } else {
-        for (idx, account) in accounts.iter().enumerate() {
+        for &(idx, account) in accounts {
             content = content.push(account_row(
                 account,
                 idx,

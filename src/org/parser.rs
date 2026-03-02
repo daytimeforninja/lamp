@@ -7,16 +7,16 @@ use crate::core::recurrence::Recurrence;
 use crate::core::task::{Priority, Task, TaskState};
 
 static HEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?P<stars>\*+)\s+(?:(?P<state>TODO|NEXT|WAITING|SOMEDAY|DONE|CANCELLED)\s+)?(?:\[#(?P<priority>[ABC])\]\s+)?(?P<title>.+?)(?:\s+:(?P<tags>[^:]+(?::[^:]+)*):)?$").unwrap()
+    Regex::new(r"^(?P<stars>\*+)\s+(?:(?P<state>TODO|NEXT|WAITING|SOMEDAY|DONE|CANCELLED)\s+)?(?:\[#(?P<priority>[ABC])\]\s+)?(?P<title>.+?)(?:\s+:(?P<tags>[A-Za-z0-9@_#%]+(?::[A-Za-z0-9@_#%]+)*):)?$").unwrap()
 });
 
 static SCHEDULED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"SCHEDULED:\s*<(?P<date>\d{4}-\d{2}-\d{2})\s+\w+(?:\s+(?P<recurrence>[.+]+\d+[dwmy]))?>")
+    Regex::new(r"SCHEDULED:\s*<(?P<date>\d{4}-\d{2}-\d{2})\s+\w+(?:\s+(?P<time>\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?))?(?:\s+(?P<recurrence>[.+]+\d+[dwmy]))?>")
         .unwrap()
 });
 
 static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"DEADLINE:\s*<(?P<date>\d{4}-\d{2}-\d{2})\s+\w+(?:\s+(?P<recurrence>[.+]+\d+[dwmy]))?>")
+    Regex::new(r"DEADLINE:\s*<(?P<date>\d{4}-\d{2}-\d{2})\s+\w+(?:\s+(?P<time>\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?))?(?:\s+(?P<recurrence>[.+]+\d+[dwmy]))?>")
         .unwrap()
 });
 
@@ -25,7 +25,7 @@ static CLOSED_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static PROPERTY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*:(?P<key>[A-Z_]+):\s+(?P<value>.+)$").unwrap()
+    Regex::new(r"(?i)^\s*:(?P<key>[A-Za-z_]+):\s+(?P<value>.+)$").unwrap()
 });
 
 static LOGBOOK_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -46,7 +46,9 @@ pub struct ParsedHeading {
     pub title: String,
     pub tags: Vec<String>,
     pub scheduled: Option<NaiveDate>,
+    pub scheduled_time: Option<String>,
     pub deadline: Option<NaiveDate>,
+    pub deadline_time: Option<String>,
     pub closed: Option<NaiveDateTime>,
     pub recurrence: Option<Recurrence>,
     pub properties: Vec<(String, String)>,
@@ -81,48 +83,52 @@ impl OrgParser {
 
                 i += 1;
 
-                // Parse CLOSED line
+                // Parse CLOSED and planning lines (SCHEDULED/DEADLINE)
+                // These may appear on the same line or on separate lines.
                 let mut closed = None;
-                if i < lines.len() {
-                    let line = lines[i].trim_start();
-                    if line.starts_with("CLOSED:") {
-                        if let Some(caps) = CLOSED_RE.captures(lines[i]) {
-                            closed = NaiveDateTime::parse_from_str(
-                                &caps["datetime"],
-                                "%Y-%m-%d %a %H:%M",
-                            )
-                            .ok();
-                        }
-                        i += 1;
-                    }
-                }
-
-                // Parse planning line (SCHEDULED/DEADLINE)
                 let mut scheduled = None;
+                let mut scheduled_time = None;
                 let mut deadline = None;
+                let mut deadline_time = None;
                 let mut recurrence = None;
 
-                if i < lines.len() {
+                // Scan up to 2 lines for CLOSED/SCHEDULED/DEADLINE
+                for _ in 0..2 {
+                    if i >= lines.len() {
+                        break;
+                    }
                     let line = lines[i];
-                    if line.trim_start().starts_with("SCHEDULED:")
-                        || line.trim_start().starts_with("DEADLINE:")
+                    let trimmed = line.trim_start();
+                    if !trimmed.starts_with("CLOSED:")
+                        && !trimmed.starts_with("SCHEDULED:")
+                        && !trimmed.starts_with("DEADLINE:")
                     {
-                        if let Some(caps) = SCHEDULED_RE.captures(line) {
-                            scheduled = NaiveDate::parse_from_str(&caps["date"], "%Y-%m-%d").ok();
+                        break;
+                    }
+                    if let Some(caps) = CLOSED_RE.captures(line) {
+                        closed = NaiveDateTime::parse_from_str(
+                            &caps["datetime"],
+                            "%Y-%m-%d %a %H:%M",
+                        )
+                        .ok();
+                    }
+                    if let Some(caps) = SCHEDULED_RE.captures(line) {
+                        scheduled = NaiveDate::parse_from_str(&caps["date"], "%Y-%m-%d").ok();
+                        scheduled_time = caps.name("time").map(|m| m.as_str().to_string());
+                        if let Some(rec_match) = caps.name("recurrence") {
+                            recurrence = Recurrence::parse(rec_match.as_str());
+                        }
+                    }
+                    if let Some(caps) = DEADLINE_RE.captures(line) {
+                        deadline = NaiveDate::parse_from_str(&caps["date"], "%Y-%m-%d").ok();
+                        deadline_time = caps.name("time").map(|m| m.as_str().to_string());
+                        if recurrence.is_none() {
                             if let Some(rec_match) = caps.name("recurrence") {
                                 recurrence = Recurrence::parse(rec_match.as_str());
                             }
                         }
-                        if let Some(caps) = DEADLINE_RE.captures(line) {
-                            deadline = NaiveDate::parse_from_str(&caps["date"], "%Y-%m-%d").ok();
-                            if recurrence.is_none() {
-                                if let Some(rec_match) = caps.name("recurrence") {
-                                    recurrence = Recurrence::parse(rec_match.as_str());
-                                }
-                            }
-                        }
-                        i += 1;
                     }
+                    i += 1;
                 }
 
                 // Parse properties drawer
@@ -161,12 +167,15 @@ impl OrgParser {
                 }
 
                 // Collect notes (everything until next heading or EOF)
+                // Strip the leading indentation that the writer adds (2 spaces per level)
                 let mut notes = String::new();
+                let indent_prefix = "  "; // writer always uses 2-space indent
                 while i < lines.len() && !lines[i].starts_with('*') {
                     if !notes.is_empty() {
                         notes.push('\n');
                     }
-                    notes.push_str(lines[i]);
+                    let line = lines[i].strip_prefix(indent_prefix).unwrap_or(lines[i]);
+                    notes.push_str(line);
                     i += 1;
                 }
                 let notes = notes.trim().to_string();
@@ -178,7 +187,9 @@ impl OrgParser {
                     title,
                     tags,
                     scheduled,
+                    scheduled_time,
                     deadline,
+                    deadline_time,
                     closed,
                     recurrence,
                     properties,
@@ -223,6 +234,13 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         .cloned()
         .collect();
 
+    let extra_tags: Vec<String> = heading
+        .tags
+        .iter()
+        .filter(|t| !t.starts_with('@'))
+        .cloned()
+        .collect();
+
     let waiting_for = OrgParser::get_property(&heading.properties, "WAITING_FOR")
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
@@ -255,6 +273,10 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
 
+    let sync_etag = OrgParser::get_property(&heading.properties, "SYNC_ETAG")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
     Task {
         id,
         title: heading.title.clone(),
@@ -272,9 +294,14 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         esc,
         delegated,
         follow_up,
+        extra_tags,
+        scheduled_time: heading.scheduled_time.clone(),
+        deadline_time: heading.deadline_time.clone(),
+        logbook_entries: heading.logbook_entries.clone(),
         sync_href,
         sync_hash,
         sync_uid,
+        sync_etag,
     }
 }
 

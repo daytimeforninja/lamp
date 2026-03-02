@@ -279,7 +279,7 @@ pub fn settings_view<'a>(
     content = content.push(
         text_input::text_input(
             crate::fl!("sync-imap-folder"),
-            if config.imap.folder.is_empty() { "flup" } else { &config.imap.folder },
+            &config.imap.folder,
         )
         .on_input(|v| Message::SetImapFolder(v))
         .width(Length::Fill),

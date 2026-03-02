@@ -329,7 +329,7 @@ fn event_form_view(
                 )
                 .push(
                     text_input::text_input("HH:MM", start_time.clone())
-                        .on_input(|v| Message::SetEventStart(v))
+                        .on_input(|v| Message::SetEventStartTime(v))
                         .width(Length::Fixed(80.0)),
                 ),
         );
@@ -354,7 +354,7 @@ fn event_form_view(
                 )
                 .push(
                     text_input::text_input("HH:MM", end_time.clone())
-                        .on_input(|v| Message::SetEventEnd(v))
+                        .on_input(|v| Message::SetEventEndTime(v))
                         .width(Length::Fixed(80.0)),
                 ),
         );

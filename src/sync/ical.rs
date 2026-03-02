@@ -12,7 +12,13 @@ pub fn format_date(date: NaiveDate) -> String {
 }
 
 pub fn format_datetime(dt: NaiveDateTime) -> String {
-    dt.format("%Y%m%dT%H%M%S").to_string()
+    // Convert local time to UTC before appending Z
+    use chrono::TimeZone;
+    let local_dt = chrono::Local.from_local_datetime(&dt).single();
+    match local_dt {
+        Some(l) => format!("{}Z", l.with_timezone(&chrono::Utc).format("%Y%m%dT%H%M%S")),
+        None => format!("{}Z", dt.format("%Y%m%dT%H%M%S")),
+    }
 }
 
 pub fn parse_ical_date(s: &str) -> Option<NaiveDate> {
@@ -23,8 +29,17 @@ pub fn parse_ical_date(s: &str) -> Option<NaiveDate> {
 
 pub fn parse_ical_datetime(s: &str) -> Option<NaiveDateTime> {
     // "20260224T143000" or "20260224T143000Z"
+    let is_utc = s.ends_with('Z');
     let s = s.trim_end_matches('Z');
-    NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S").ok()
+    let dt = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S").ok()?;
+    if is_utc {
+        // Convert UTC to local time
+        use chrono::{TimeZone, Utc};
+        let utc_dt = Utc.from_utc_datetime(&dt);
+        Some(utc_dt.with_timezone(&chrono::Local).naive_local())
+    } else {
+        Some(dt)
+    }
 }
 
 pub fn escape_text(s: &str) -> String {

@@ -24,9 +24,11 @@ pub fn event_to_vcalendar(event: &CalendarEvent) -> String {
             "DTSTART;VALUE=DATE:{}",
             format_date(event.start.date())
         ));
+        // RFC 5545: DTEND for all-day events is exclusive, so add one day
+        let end_exclusive = event.end.date() + Duration::days(1);
         lines.push(format!(
             "DTEND;VALUE=DATE:{}",
-            format_date(event.end.date())
+            format_date(end_exclusive)
         ));
     } else {
         lines.push(format!("DTSTART:{}", format_datetime(event.start)));
@@ -123,7 +125,9 @@ pub fn vcalendar_to_events(ical: &str) -> Vec<CalendarEvent> {
                 "DTEND" => {
                     if is_date_only {
                         if let Some(d) = parse_ical_date(value) {
-                            dtend = Some(d.and_hms_opt(0, 0, 0).unwrap());
+                            // RFC 5545: DTEND for all-day events is exclusive; subtract one day
+                            let inclusive = d.pred_opt().unwrap_or(d);
+                            dtend = Some(inclusive.and_hms_opt(0, 0, 0).unwrap());
                         }
                     } else {
                         dtend = parse_ical_datetime(value);
@@ -322,15 +326,21 @@ fn expand_rrule(
                     let start = current.and_time(base_time);
                     events.push(make_instance(base, uid_raw, start, duration, n));
                 }
-                // Advance by interval months
+                // Advance by interval months, preserving original day-of-month
                 let mut month = current.month() + interval;
                 let mut year = current.year();
                 while month > 12 {
                     month -= 12;
                     year += 1;
                 }
-                current = NaiveDate::from_ymd_opt(year, month, current.day().min(28))
-                    .or_else(|| NaiveDate::from_ymd_opt(year, month, 28))
+                current = NaiveDate::from_ymd_opt(year, month, base_date.day())
+                    .or_else(|| {
+                        // Day doesn't exist in this month — use last day of month
+                        let next_m = if month == 12 { 1 } else { month + 1 };
+                        let next_y = if month == 12 { year + 1 } else { year };
+                        NaiveDate::from_ymd_opt(next_y, next_m, 1)
+                            .and_then(|d| d.pred_opt())
+                    })
                     .unwrap_or(current);
                 n += 1;
             }
@@ -349,8 +359,11 @@ fn expand_rrule(
                     events.push(make_instance(base, uid_raw, start, duration, n));
                 }
                 let year = current.year() + interval as i32;
-                current = NaiveDate::from_ymd_opt(year, current.month(), current.day().min(28))
-                    .or_else(|| NaiveDate::from_ymd_opt(year, current.month(), 28))
+                current = NaiveDate::from_ymd_opt(year, base_date.month(), base_date.day())
+                    .or_else(|| {
+                        // Feb 29 in a non-leap year — use Feb 28
+                        NaiveDate::from_ymd_opt(year, base_date.month(), 28)
+                    })
                     .unwrap_or(current);
                 n += 1;
             }
@@ -412,12 +425,11 @@ fn parse_rrule_params(rule: &str) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Compute a content hash for an event (for change detection).
+/// Compute a deterministic content hash for an event (for change detection).
 pub fn event_content_hash(event: &CalendarEvent) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = crate::sync::vtodo::StableHasher::new();
     event.title.hash(&mut hasher);
     event.start.to_string().hash(&mut hasher);
     event.end.to_string().hash(&mut hasher);

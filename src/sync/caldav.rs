@@ -48,7 +48,11 @@ pub struct CalDavClient {
 
 impl CalDavClient {
     pub fn new(base_url: &str, username: &str, password: &str) -> Result<Self, String> {
+        if base_url.starts_with("http://") {
+            return Err("Refusing to connect over plain HTTP — credentials would be sent in cleartext. Use https:// instead.".to_string());
+        }
         let http = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
         Ok(Self {
@@ -251,7 +255,14 @@ impl CalDavClient {
     ) -> Result<(Vec<SyncChange>, Option<String>), String> {
         let url = self.resolve_href(calendar_href);
         let token_element = match sync_token {
-            Some(token) => format!("<d:sync-token>{}</d:sync-token>", token),
+            Some(token) => {
+                let escaped = token
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;");
+                format!("<d:sync-token>{}</d:sync-token>", escaped)
+            }
             None => "<d:sync-token/>".to_string(),
         };
 

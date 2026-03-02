@@ -103,8 +103,14 @@ impl Recurrence {
         };
 
         // Parse count and unit (e.g., "1w", "2d", "3m", "1y")
+        if rest.len() < 2 {
+            return None;
+        }
         let (count_str, unit_char) = rest.split_at(rest.len() - 1);
         let count: u32 = count_str.parse().ok()?;
+        if count == 0 {
+            return None;
+        }
         let unit = match unit_char {
             "d" => RecurrenceUnit::Day,
             "w" => RecurrenceUnit::Week,

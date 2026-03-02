@@ -226,6 +226,9 @@ pub struct Lamp {
 
     // Month calendar
     month_calendar: MonthCalendarState,
+
+    // Track in-flight sync operations to know when to clear Syncing status
+    sync_ops_pending: usize,
 }
 
 pub struct Flags {
@@ -373,6 +376,7 @@ impl Application for Lamp {
             sync_conflicts: Vec::new(),
             pending_deletions: Vec::new(),
             month_calendar: MonthCalendarState::default(),
+            sync_ops_pending: 0,
         };
         app.rebuild_cache();
 
@@ -539,6 +543,10 @@ impl Application for Lamp {
                     task.project = Some(project_name.clone());
                     if let Some(project) = self.projects.iter_mut().find(|p| p.name == *project_name) {
                         project.tasks.push(task);
+                    } else {
+                        // Project not found — route back by state to avoid data loss
+                        log::warn!("Project '{}' not found, routing task by state", project_name);
+                        self.route_task_by_state(task);
                     }
                     self.save_all();
                 }
@@ -636,8 +644,15 @@ impl Application for Lamp {
             }
 
             Message::DeleteProject(name) => {
-                self.projects.retain(|p| p.name != name);
-                self.save_projects();
+                // Move orphaned tasks back to their state-based lists before deleting
+                if let Some(pos) = self.projects.iter().position(|p| p.name == name) {
+                    let project = self.projects.remove(pos);
+                    for mut task in project.tasks {
+                        task.project = None;
+                        self.route_task_by_state(task);
+                    }
+                }
+                self.save_all();
                 self.rebuild_cache();
             }
 
@@ -916,10 +931,16 @@ impl Application for Lamp {
                 self.pending_delete_contact = None;
                 if idx < self.contacts.len() {
                     let removed = self.contacts.remove(idx);
-                    self.flipped_contacts.remove(&idx);
-                    if self.editing_contact == Some(idx) {
-                        self.editing_contact = None;
-                    }
+                    // Rebuild index-based state after removal to avoid stale references
+                    self.flipped_contacts = self.flipped_contacts.iter()
+                        .filter(|&&i| i != idx)
+                        .map(|&i| if i > idx { i - 1 } else { i })
+                        .collect();
+                    self.editing_contact = match self.editing_contact {
+                        Some(i) if i == idx => None,
+                        Some(i) if i > idx => Some(i - 1),
+                        other => other,
+                    };
                     self.save_contacts();
 
                     // Delete from CardDAV server if we have a sync_href
@@ -1208,17 +1229,45 @@ impl Application for Lamp {
 
             Message::OpenNoteInEditor(id) => {
                 if let Some(note) = self.notes.iter().find(|n| n.id == id) {
-                    let tmp_dir = std::env::temp_dir();
-                    let tmp_path = tmp_dir.join(format!("lamp-note-{}.md", note.id));
-                    if let Err(e) = std::fs::write(&tmp_path, &note.body) {
-                        log::error!("Failed to write temp note file: {}", e);
+                    // Write the note body to a temp file for editing
+                    let note_path = self.config.notes_dir().join(format!("{}.body.txt", note.id));
+                    if let Err(e) = std::fs::write(&note_path, &note.body) {
+                        log::error!("Failed to write note file: {}", e);
                     } else {
                         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                        if let Err(e) = std::process::Command::new(&editor)
-                            .arg(&tmp_path)
+                        let note_id = note.id;
+                        let path_clone = note_path.clone();
+                        let notes_dir = self.config.notes_dir();
+                        // Spawn editor and read back after it exits
+                        match std::process::Command::new(&editor)
+                            .arg(&note_path)
                             .spawn()
                         {
-                            log::error!("Failed to open editor: {}", e);
+                            Ok(mut child) => {
+                                std::thread::spawn(move || {
+                                    let _ = child.wait();
+                                    // Read back the edited body and save to the .org note file
+                                    if let Ok(edited_body) = std::fs::read_to_string(&path_clone) {
+                                        // Re-read the .org note, update body, re-write
+                                        let org_path = notes_dir.join(format!("{}.org", note_id));
+                                        if let Ok(content) = std::fs::read_to_string(&org_path) {
+                                            let mut notes = crate::org::convert::parse_notes(&content);
+                                            if let Some(note) = notes.iter_mut().find(|n| n.id == note_id) {
+                                                note.body = edited_body.trim().to_string();
+                                                note.modified = chrono::Local::now().naive_local();
+                                                let new_content = crate::org::writer::OrgWriter::write_note_file(note);
+                                                let _ = std::fs::write(&org_path, new_content);
+                                            }
+                                        }
+                                    }
+                                    // Clean up temp file
+                                    let _ = std::fs::remove_file(&path_clone);
+                                    log::info!("Editor closed for note {}", note_id);
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Failed to open editor: {}", e);
+                            }
                         }
                     }
                 }
@@ -1301,11 +1350,12 @@ impl Application for Lamp {
                     .unwrap_or(false);
 
                 if is_completed {
-                    // Un-complete: restore to previous state
+                    // Un-complete: restore to Next (the expected active state in Do mode)
                     if let Some(plan) = &mut self.day_plan {
                         plan.uncomplete_task(id);
                     }
                     self.modify_task(id, |task| {
+                        // If the task was confirmed for the day plan it was Next; restore that
                         task.state = TaskState::Next;
                         task.completed = None;
                     });
@@ -1472,8 +1522,8 @@ impl Application for Lamp {
                     let task_cals = self.config.task_calendar_hrefs();
                     let event_cals = self.config.event_calendar_hrefs();
                     let sync_tokens = self.config.sync_tokens.clone();
-                    let completions = std::mem::take(&mut self.pending_completions);
-                    let deletions = std::mem::take(&mut self.pending_deletions);
+                    let completions = self.pending_completions.clone();
+                    let deletions = self.pending_deletions.clone();
 
                     batch.push(CosmicTask::perform(
                         async move {
@@ -1543,7 +1593,7 @@ impl Application for Lamp {
                 let imap_host = self.config.imap.host.trim().to_string();
                 if !imap_host.is_empty() {
                     let folder = if self.config.imap.folder.is_empty() {
-                        "flup".to_string()
+                        "INBOX".to_string()
                     } else {
                         self.config.imap.folder.clone()
                     };
@@ -1564,6 +1614,7 @@ impl Application for Lamp {
                     self.sync_status = SyncStatus::default();
                     return CosmicTask::none();
                 }
+                self.sync_ops_pending = batch.len();
                 return CosmicTask::batch(batch);
             }
 
@@ -1614,10 +1665,11 @@ impl Application for Lamp {
                         self.save_all();
                         self.save_config();
 
-                        self.sync_conflicts = sync_result.conflicts;
+                        // Clear pending operations that were successfully sent
+                        self.pending_completions.clear();
+                        self.pending_deletions.clear();
 
-                        let now = chrono::Local::now().format("%H:%M").to_string();
-                        self.sync_status = SyncStatus::LastSynced(now);
+                        self.sync_conflicts = sync_result.conflicts;
 
                         if !sync_result.errors.is_empty() {
                             log::warn!("Sync completed with errors: {:?}", sync_result.errors);
@@ -1625,9 +1677,13 @@ impl Application for Lamp {
                     }
                     Err(e) => {
                         log::error!("Sync failed: {}", e);
-                        self.sync_status = SyncStatus::Error(e);
+                        // Only set error if we're not already showing an error from another op
+                        if self.sync_status == SyncStatus::Syncing {
+                            self.sync_status = SyncStatus::Error(e);
+                        }
                     }
                 }
+                self.finish_sync_op();
             }
 
             Message::SetServiceUrl(kind, url) => {
@@ -1827,6 +1883,7 @@ impl Application for Lamp {
                         log::error!("Notes sync failed: {}", e);
                     }
                 }
+                self.finish_sync_op();
             }
 
             Message::ContactsFetched(result) => {
@@ -1842,6 +1899,7 @@ impl Application for Lamp {
                         log::error!("Contact fetch failed: {}", e);
                     }
                 }
+                self.finish_sync_op();
             }
 
             Message::ContactDeleted(result) => {
@@ -1866,6 +1924,7 @@ impl Application for Lamp {
                         // Clear old suggestions and auto-trigger batch analysis
                         self.email_suggestions.clear();
                         if !self.imap_emails.is_empty() {
+                            self.finish_sync_op();
                             return self.update(Message::SuggestEmailTasks);
                         }
                     }
@@ -1873,11 +1932,7 @@ impl Application for Lamp {
                         log::error!("IMAP fetch failed: {}", e);
                     }
                 }
-                // Update sync status if CalDAV isn't also running
-                if self.sync_status == SyncStatus::Syncing && !self.config.sync_ready() {
-                    let now = chrono::Local::now().format("%H:%M").to_string();
-                    self.sync_status = SyncStatus::LastSynced(now);
-                }
+                self.finish_sync_op();
             }
 
             Message::SuggestEmailTasks => {
@@ -2051,7 +2106,7 @@ impl Application for Lamp {
             Message::ArchiveEmail(uid) => {
                 let host = self.config.imap.host.trim().to_string();
                 let folder = if self.config.imap.folder.is_empty() {
-                    "flup".to_string()
+                    "INBOX".to_string()
                 } else {
                     self.config.imap.folder.clone()
                 };
@@ -2088,8 +2143,10 @@ impl Application for Lamp {
 
             // --- Event messages ---
             Message::CreateEvent => {
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                let now_time = chrono::Local::now().format("%H:%M").to_string();
+                let now = chrono::Local::now();
+                let today = now.format("%Y-%m-%d").to_string();
+                let now_time = now.format("%H:%M").to_string();
+                let hour = now.hour();
                 let default_cal = self
                     .config
                     .event_calendar_hrefs()
@@ -2101,11 +2158,14 @@ impl Application for Lamp {
                     title: String::new(),
                     start_date: today.clone(),
                     start_time: now_time.clone(),
-                    end_date: today,
-                    end_time: {
-                        let hour = chrono::Local::now().hour();
-                        format!("{:02}:00", (hour + 1) % 24)
+                    end_date: if hour >= 23 {
+                        (now.date_naive() + chrono::Duration::days(1))
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    } else {
+                        today
                     },
+                    end_time: format!("{:02}:00", (hour + 1) % 24),
                     all_day: false,
                     location: String::new(),
                     description: String::new(),
@@ -2131,27 +2191,25 @@ impl Application for Lamp {
 
             Message::SetEventStart(value) => {
                 if let Some(ref mut form) = self.event_form {
-                    if let Some((d, t)) = value.split_once(' ') {
-                        form.start_date = d.to_string();
-                        form.start_time = t.to_string();
-                    } else if value.contains(':') {
-                        form.start_time = value;
-                    } else {
-                        form.start_date = value;
-                    }
+                    form.start_date = value;
+                }
+            }
+
+            Message::SetEventStartTime(value) => {
+                if let Some(ref mut form) = self.event_form {
+                    form.start_time = value;
                 }
             }
 
             Message::SetEventEnd(value) => {
                 if let Some(ref mut form) = self.event_form {
-                    if let Some((d, t)) = value.split_once(' ') {
-                        form.end_date = d.to_string();
-                        form.end_time = t.to_string();
-                    } else if value.contains(':') {
-                        form.end_time = value;
-                    } else {
-                        form.end_date = value;
-                    }
+                    form.end_date = value;
+                }
+            }
+
+            Message::SetEventEndTime(value) => {
+                if let Some(ref mut form) = self.event_form {
+                    form.end_time = value;
                 }
             }
 
@@ -2229,12 +2287,13 @@ impl Application for Lamp {
 
             Message::DeleteEvent(id) => {
                 // Delete from CalDAV if synced — find the account that owns this event
+                let mut async_delete = None;
                 if let Some(ev) = self.events.iter().find(|e| e.id == id) {
                     if let Some(ref sync_href) = ev.sync_href {
                         let caldav_url = self.config.calendars.url.clone();
                         if !caldav_url.is_empty() {
                             let href = sync_href.clone();
-                            let _ = CosmicTask::perform(
+                            async_delete = Some(CosmicTask::perform(
                                 async move {
                                     let creds =
                                         crate::sync::keyring::load_credentials(&caldav_url).await;
@@ -2248,12 +2307,15 @@ impl Application for Lamp {
                                     Ok::<(), String>(())
                                 },
                                 |_| cosmic::Action::App(Message::Save),
-                            );
+                            ));
                         }
                     }
                 }
                 self.events.retain(|e| e.id != id);
                 self.save_events();
+                if let Some(task) = async_delete {
+                    return task;
+                }
             }
 
             // Month calendar navigation
@@ -2665,32 +2727,28 @@ impl Lamp {
             &self.shopping_items
         };
 
-        let filtered_contacts: Vec<Contact>;
-        let contacts_filtered: &[Contact] = if !q.is_empty() && what == WhatPage::Contacts {
+        // Contacts: always pass (original_index, &Contact) tuples to preserve correct indices
+        let contacts_indexed: Vec<(usize, &Contact)> = if !q.is_empty() && what == WhatPage::Contacts {
             let lq = q.to_lowercase();
-            filtered_contacts = self
-                .contacts
+            self.contacts
                 .iter()
-                .filter(|c| c.name.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_contacts
+                .enumerate()
+                .filter(|(_, c)| c.name.to_lowercase().contains(&lq))
+                .collect()
         } else {
-            &self.contacts
+            self.contacts.iter().enumerate().collect()
         };
 
-        let filtered_accounts: Vec<Account>;
-        let accounts_filtered: &[Account] = if !q.is_empty() && what == WhatPage::Accounts {
+        // Accounts: always pass (original_index, &Account) tuples to preserve correct indices
+        let accounts_indexed: Vec<(usize, &Account)> = if !q.is_empty() && what == WhatPage::Accounts {
             let lq = q.to_lowercase();
-            filtered_accounts = self
-                .accounts
+            self.accounts
                 .iter()
-                .filter(|a| a.name.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_accounts
+                .enumerate()
+                .filter(|(_, a)| a.name.to_lowercase().contains(&lq))
+                .collect()
         } else {
-            &self.accounts
+            self.accounts.iter().enumerate().collect()
         };
 
         let filtered_notes: Vec<Note>;
@@ -2817,7 +2875,7 @@ impl Lamp {
                 }
                 WhatPage::Contacts => {
                     pages::contacts::contacts_view(
-                        contacts_filtered,
+                        &contacts_indexed,
                         &self.contact_input,
                         &self.flipped_contacts,
                         self.editing_contact,
@@ -2826,7 +2884,7 @@ impl Lamp {
                 }
                 WhatPage::Accounts => {
                     pages::accounts::accounts_view(
-                        accounts_filtered,
+                        &accounts_indexed,
                         &self.account_input,
                         self.expanded_account,
                         self.pending_delete_account,
@@ -2959,6 +3017,15 @@ impl Lamp {
             let old_state = task.state.clone();
             task.state = state.clone();
 
+            // Set completed timestamp when marking done/cancelled
+            if state.is_done() && !old_state.is_done() {
+                task.completed = Some(chrono::Local::now().naive_local());
+            }
+            // Clear completed timestamp when un-completing
+            if !state.is_done() && old_state.is_done() {
+                task.completed = None;
+            }
+
             // Auto-stamp delegated date when entering Waiting state
             if state == TaskState::Waiting && old_state != TaskState::Waiting {
                 if task.delegated.is_none() {
@@ -2976,6 +3043,11 @@ impl Lamp {
                 let project_name = project_name.clone();
                 if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
                     project.tasks.push(task);
+                } else {
+                    // Project not found — route by state as fallback to avoid losing the task
+                    log::warn!("Project '{}' not found, routing task by state", project_name);
+                    task.project = None;
+                    self.route_task_by_state(task);
                 }
             } else {
                 match state {
@@ -3201,6 +3273,15 @@ impl Lamp {
             log::error!("Failed to save config: {:?}", e);
         }
     }
+
+    /// Decrement the pending sync operations counter and finalize sync status when all done.
+    fn finish_sync_op(&mut self) {
+        self.sync_ops_pending = self.sync_ops_pending.saturating_sub(1);
+        if self.sync_ops_pending == 0 && self.sync_status == SyncStatus::Syncing {
+            let now = chrono::Local::now().format("%H:%M").to_string();
+            self.sync_status = SyncStatus::LastSynced(now);
+        }
+    }
 }
 
 fn parse_form_datetime(
@@ -3217,7 +3298,8 @@ fn parse_form_datetime(
     }
 }
 
-/// Sentence-case: first letter uppercase, rest lowercase.
+/// Capitalize the first letter, preserving the rest as-is (unlike full sentence-case
+/// which lowercases everything and destroys acronyms/proper nouns).
 fn sentence_case(s: &str) -> String {
     let s = s.trim();
     if s.is_empty() {
@@ -3225,7 +3307,7 @@ fn sentence_case(s: &str) -> String {
     }
     let mut chars = s.chars();
     let first = chars.next().unwrap().to_uppercase().to_string();
-    first + &chars.as_str().to_lowercase()
+    first + chars.as_str()
 }
 
 fn load_tasks(path: &std::path::Path) -> Vec<Task> {

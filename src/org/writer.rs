@@ -50,8 +50,9 @@ impl OrgWriter {
 
         out.push_str(&task.title);
 
-        // Tags
-        let all_tags = task.contexts.clone();
+        // Tags (contexts + extra_tags)
+        let mut all_tags = task.contexts.clone();
+        all_tags.extend(task.extra_tags.iter().cloned());
         if !all_tags.is_empty() {
             out.push_str(" :");
             out.push_str(&all_tags.join(":"));
@@ -72,6 +73,10 @@ impl OrgWriter {
         if let Some(scheduled) = task.scheduled {
             let day_name = scheduled.format("%a");
             let mut sched_str = format!("SCHEDULED: <{} {}", scheduled.format("%Y-%m-%d"), day_name);
+            if let Some(ref time) = task.scheduled_time {
+                sched_str.push(' ');
+                sched_str.push_str(time);
+            }
             if let Some(ref recurrence) = task.recurrence {
                 sched_str.push(' ');
                 sched_str.push_str(&recurrence.to_string());
@@ -81,7 +86,20 @@ impl OrgWriter {
         }
         if let Some(deadline) = task.deadline {
             let day_name = deadline.format("%a");
-            planning.push(format!("DEADLINE: <{} {}>", deadline.format("%Y-%m-%d"), day_name));
+            let mut dead_str = format!("DEADLINE: <{} {}", deadline.format("%Y-%m-%d"), day_name);
+            if let Some(ref time) = task.deadline_time {
+                dead_str.push(' ');
+                dead_str.push_str(time);
+            }
+            // Write recurrence on deadline if no scheduled date carries it
+            if task.scheduled.is_none() {
+                if let Some(ref recurrence) = task.recurrence {
+                    dead_str.push(' ');
+                    dead_str.push_str(&recurrence.to_string());
+                }
+            }
+            dead_str.push('>');
+            planning.push(dead_str);
         }
         if !planning.is_empty() {
             out.push_str(indent);
@@ -117,7 +135,20 @@ impl OrgWriter {
         if let Some(ref sync_uid) = task.sync_uid {
             out.push_str(&format!("{indent}:SYNC_UID: {}\n", sync_uid));
         }
+        if let Some(ref sync_etag) = task.sync_etag {
+            out.push_str(&format!("{indent}:SYNC_ETAG: {}\n", sync_etag));
+        }
         out.push_str(&format!("{indent}:END:\n"));
+
+        // Logbook (state-change entries)
+        if !task.logbook_entries.is_empty() {
+            out.push_str(&format!("{indent}:LOGBOOK:\n"));
+            for entry in task.logbook_entries.iter().rev() {
+                out.push_str(&Self::format_logbook_entry("DONE", "TODO", *entry));
+                out.push('\n');
+            }
+            out.push_str(&format!("{indent}:END:\n"));
+        }
 
         // Notes
         if !task.notes.is_empty() {
@@ -292,7 +323,9 @@ impl OrgWriter {
         out.push_str("* Completed Tasks\n");
         for ct in &plan.completed_tasks {
             let esc_str = ct.esc.map(|e| e.to_string()).unwrap_or_default();
-            out.push_str(&format!("  - {} | {} | {}\n", ct.id, ct.title, esc_str));
+            // Sanitize title to avoid corrupting the pipe-delimited format
+            let safe_title = ct.title.replace(" | ", " - ");
+            out.push_str(&format!("  - {} | {} | {}\n", ct.id, safe_title, esc_str));
         }
         out.push('\n');
 
@@ -356,6 +389,12 @@ impl OrgWriter {
         out.push_str("* ");
         out.push_str(task.state.as_keyword());
         out.push(' ');
+
+        if let Some(ref priority) = task.priority {
+            out.push_str(priority.as_org());
+            out.push(' ');
+        }
+
         out.push_str(&task.title);
 
         let mut all_tags = task.contexts.clone();
@@ -386,6 +425,21 @@ impl OrgWriter {
             "  :CREATED: [{}]\n",
             task.created.format("%Y-%m-%d %a %H:%M")
         ));
+        if let Some(esc) = task.esc {
+            out.push_str(&format!("  :ESC: {}\n", esc));
+        }
+        if let Some(ref wf) = task.waiting_for {
+            out.push_str(&format!("  :WAITING_FOR: {}\n", wf));
+        }
+        if let Some(ref sync_href) = task.sync_href {
+            out.push_str(&format!("  :SYNC_HREF: {}\n", sync_href));
+        }
+        if let Some(sync_hash) = task.sync_hash {
+            out.push_str(&format!("  :SYNC_HASH: {}\n", sync_hash));
+        }
+        if let Some(ref sync_uid) = task.sync_uid {
+            out.push_str(&format!("  :SYNC_UID: {}\n", sync_uid));
+        }
         out.push_str("  :END:\n");
 
         // Logbook

@@ -406,9 +406,9 @@ fn task_row(
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| task.waiting_for.clone().unwrap_or_default());
-            let wf_input = text_input::text_input("Waiting for...", wf_value)
+            let wf_input = text_input::text_input("Waiting for...", wf_value.clone())
                 .on_input(move |v| Message::WaitingForInputChanged(id, v))
-                .on_submit(move |_| Message::SetWaitingFor(id, String::new()))
+                .on_submit(move |_| Message::SetWaitingFor(id, wf_value.clone()))
                 .width(Length::Fill);
             notes_col = notes_col.push(
                 row()

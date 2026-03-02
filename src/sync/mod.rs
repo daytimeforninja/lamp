@@ -153,9 +153,19 @@ impl SyncEngine {
                         }
                     };
 
-                    // Skip completed/cancelled tasks from remote
+                    // If a remote task is completed and we have a local copy, mark for completion
                     if remote_task.state.is_done() {
-                        log::debug!("Skipping completed remote task: {}", remote_task.title);
+                        if let Some(&local_task) = local_by_id.get(&remote_task.id) {
+                            if !local_task.state.is_done() {
+                                log::info!("Remote task completed: {}", remote_task.title);
+                                let mut pulled = remote_task;
+                                pulled.sync_href = Some(remote_vtodo.href.clone());
+                                pulled.sync_etag = Some(remote_vtodo.etag.clone());
+                                pulled.sync_hash = Some(task_content_hash(&pulled));
+                                pulled.project = local_task.project.clone();
+                                result.pulled.push(pulled);
+                            }
+                        }
                         continue;
                     }
 
@@ -166,17 +176,18 @@ impl SyncEngine {
                             .is_some_and(|h| h != local_hash);
 
                         if local_changed {
-                            let merged =
-                                merge::merge_tasks(local_task, &remote_task, &remote_task);
-                            let mut pulled = merged;
+                            let mut pulled = remote_task;
                             pulled.sync_href = Some(remote_vtodo.href.clone());
+                            pulled.sync_etag = Some(remote_vtodo.etag.clone());
                             pulled.sync_hash = Some(task_content_hash(&pulled));
+                            pulled.project = local_task.project.clone();
+                            log::info!("Merged (remote wins): {}", pulled.title);
                             result.pulled.push(pulled);
                             result.merged += 1;
-                            log::info!("Merged: {}", remote_task.title);
                         } else {
                             let mut pulled = remote_task;
                             pulled.sync_href = Some(remote_vtodo.href.clone());
+                            pulled.sync_etag = Some(remote_vtodo.etag.clone());
                             pulled.sync_hash = Some(task_content_hash(&pulled));
                             pulled.project = local_task.project.clone();
                             result.pulled.push(pulled);
@@ -185,6 +196,7 @@ impl SyncEngine {
                         log::info!("Importing new remote task: {}", remote_task.title);
                         let mut pulled = remote_task;
                         pulled.sync_href = Some(remote_vtodo.href.clone());
+                        pulled.sync_etag = Some(remote_vtodo.etag.clone());
                         pulled.sync_hash = Some(task_content_hash(&pulled));
                         result.pulled.push(pulled);
                     }
@@ -242,10 +254,20 @@ impl SyncEngine {
                 }
             };
 
-            // Skip completed/cancelled tasks from remote — we don't import done items
+            // If a remote task is completed and we have a local copy, apply the completion
             if remote_task.state.is_done() {
-                log::debug!("Skipping completed remote task: {}", remote_task.title);
                 matched_local.insert(remote_task.id);
+                if let Some(&local_task) = local_by_id.get(&remote_task.id) {
+                    if !local_task.state.is_done() {
+                        log::info!("Remote task completed: {}", remote_task.title);
+                        let mut pulled = remote_task;
+                        pulled.sync_href = Some(remote_vtodo.href.clone());
+                        pulled.sync_etag = Some(remote_vtodo.etag.clone());
+                        pulled.sync_hash = Some(task_content_hash(&pulled));
+                        pulled.project = local_task.project.clone();
+                        result.pulled.push(pulled);
+                    }
+                }
                 continue;
             }
 
@@ -258,6 +280,7 @@ impl SyncEngine {
                 if local_task.sync_hash.is_none() || local_hash != remote_hash {
                     let mut pulled = remote_task;
                     pulled.sync_href = Some(remote_vtodo.href.clone());
+                    pulled.sync_etag = Some(remote_vtodo.etag.clone());
                     pulled.sync_hash = Some(task_content_hash(&pulled));
                     pulled.project = local_task.project.clone();
                     result.pulled.push(pulled);
@@ -266,6 +289,7 @@ impl SyncEngine {
                 log::info!("Importing new remote task: {}", remote_task.title);
                 let mut pulled = remote_task;
                 pulled.sync_href = Some(remote_vtodo.href.clone());
+                pulled.sync_etag = Some(remote_vtodo.etag.clone());
                 pulled.sync_hash = Some(task_content_hash(&pulled));
                 result.pulled.push(pulled);
             }
@@ -281,8 +305,12 @@ impl SyncEngine {
                     caldav::vtodo_href(&self.calendar_href, &task.id)
                 });
                 let ical = task_to_vcalendar(task);
+                let condition = match task.sync_etag.as_deref() {
+                    Some(etag) if !etag.is_empty() => PutCondition::UpdateEtag(etag),
+                    _ => PutCondition::Unconditional,
+                };
                 log::info!("Pushing to remote: {} -> {}", task.title, href);
-                match self.client.put_vtodo(&href, PutCondition::Unconditional, &ical).await {
+                match self.client.put_vtodo(&href, condition, &ical).await {
                     Ok(_) => {
                         let mut updated = task.clone();
                         updated.sync_href = Some(href);
@@ -460,8 +488,12 @@ impl SyncEngine {
 
                     if changed {
                         let ical = task_to_vcalendar(task);
+                        let condition = match task.sync_etag.as_deref() {
+                            Some(etag) if !etag.is_empty() => PutCondition::UpdateEtag(etag),
+                            _ => PutCondition::Unconditional,
+                        };
                         log::info!("Pushing update: {}", task.title);
-                        match self.client.put_vtodo(href, PutCondition::Unconditional, &ical).await {
+                        match self.client.put_vtodo(href, condition, &ical).await {
                             Ok(_) => {
                                 let mut updated = task.clone();
                                 updated.sync_hash = Some(local_hash);
@@ -570,14 +602,27 @@ pub async fn sync_all(
     }
 
     // Sync tasks from each task calendar
+    // Only pass tasks that have no sync_href (new tasks) to the first calendar
+    // to avoid creating duplicates across multiple calendars.
+    let first_task_cal = task_cals.first().cloned();
     for cal_href in task_cals {
         let token = sync_tokens
             .iter()
             .find(|(h, _)| h == cal_href)
             .map(|(_, t)| t.as_str());
 
+        // Filter tasks for this calendar: include tasks that have sync_href on this calendar,
+        // plus new tasks (no sync_href) only for the first task calendar.
+        let is_first = first_task_cal.as_deref() == Some(cal_href.as_str());
+        let cal_tasks: Vec<Task> = tasks.iter().filter(|t| {
+            if let Some(ref href) = t.sync_href {
+                href.starts_with(cal_href.as_str()) || href.contains(cal_href.as_str())
+            } else {
+                is_first // only push new tasks to the first calendar
+            }
+        }).cloned().collect();
         let engine = SyncEngine::new(client.clone(), cal_href.clone());
-        match engine.sync_tasks(tasks, token).await {
+        match engine.sync_tasks(&cal_tasks, token).await {
             Ok(res) => {
                 merged_result.pulled.extend(res.pulled);
                 merged_result.pushed += res.pushed;

@@ -6,7 +6,8 @@ pub const CONFIG_VERSION: u64 = 2;
 
 fn default_org_dir() -> PathBuf {
     dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("lamp")
 }
 

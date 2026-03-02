@@ -245,7 +245,9 @@ pub enum Message {
     // Event form fields
     SetEventTitle(String),
     SetEventStart(String),
+    SetEventStartTime(String),
     SetEventEnd(String),
+    SetEventEndTime(String),
     SetEventAllDay(bool),
     SetEventLocation(String),
     SetEventDescription(String),

@@ -60,7 +60,11 @@ pub struct CardDavClient {
 
 impl CardDavClient {
     pub fn new(base_url: &str, username: &str, password: &str) -> Result<Self, String> {
+        if base_url.starts_with("http://") {
+            return Err("Refusing to connect over plain HTTP — credentials would be sent in cleartext. Use https:// instead.".to_string());
+        }
         let http = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
         Ok(Self {
@@ -84,9 +88,9 @@ impl CardDavClient {
             contacts.append(&mut ab_contacts);
         }
 
-        // Deduplicate by name
-        contacts.sort_by(|a, b| a.name.cmp(&b.name));
-        contacts.dedup_by(|a, b| a.name == b.name);
+        // Deduplicate by name + email (not just name, to preserve distinct contacts)
+        contacts.sort_by(|a, b| (&a.name, &a.email).cmp(&(&b.name, &b.email)));
+        contacts.dedup_by(|a, b| a.name == b.name && a.email == b.email);
 
         Ok(contacts)
     }
@@ -333,7 +337,9 @@ fn parse_vcard(vcard: &str) -> Option<Contact> {
     let mut preferred_method: Option<String> = None;
     let mut category = ContactCategory::Personal;
 
-    for line in vcard.lines() {
+    // Unfold continuation lines (RFC 6350: lines starting with space/tab are continuations)
+    let unfolded = super::ical::unfold_lines(vcard);
+    for line in unfolded.lines() {
         let line = line.trim();
         if let Some(value) = strip_ical_prefix(line, "FN") {
             name = Some(value.to_string());
@@ -381,20 +387,24 @@ fn parse_vcard(vcard: &str) -> Option<Contact> {
     })
 }
 
-/// Strip iCalendar/vCard property prefix, handling parameters.
+/// Strip iCalendar/vCard property prefix, handling parameters (case-insensitive).
 /// E.g., "EMAIL;TYPE=WORK:alice@example.com" → "alice@example.com"
 fn strip_ical_prefix<'a>(line: &'a str, property: &str) -> Option<&'a str> {
-    // Match "PROPERTY:" or "PROPERTY;"
-    if line.starts_with(property) {
-        let rest = &line[property.len()..];
-        if let Some(stripped) = rest.strip_prefix(':') {
-            return Some(stripped);
-        }
-        if rest.starts_with(';') {
-            // Has parameters — find the colon
-            if let Some(colon) = rest.find(':') {
-                return Some(&rest[colon + 1..]);
-            }
+    // Case-insensitive prefix match (vCard properties are case-insensitive per RFC 6350)
+    if line.len() < property.len() {
+        return None;
+    }
+    if !line[..property.len()].eq_ignore_ascii_case(property) {
+        return None;
+    }
+    let rest = &line[property.len()..];
+    if let Some(stripped) = rest.strip_prefix(':') {
+        return Some(stripped);
+    }
+    if rest.starts_with(';') {
+        // Has parameters — find the colon
+        if let Some(colon) = rest.find(':') {
+            return Some(&rest[colon + 1..]);
         }
     }
     None
@@ -515,7 +525,12 @@ pub fn save_contacts(path: &Path, contacts: &[Contact]) -> Result<(), String> {
 /// Matches by name. Preserves local-only fields like `last_contacted`.
 pub fn merge_contacts(local: &mut Vec<Contact>, remote: Vec<Contact>) {
     for rc in remote {
-        if let Some(lc) = local.iter_mut().find(|c| c.name == rc.name) {
+        // Match by sync_href first (stable identity), then by name as fallback
+        let pos = rc.sync_href.as_ref().and_then(|href| {
+            local.iter().position(|c| c.sync_href.as_ref() == Some(href))
+        }).or_else(|| local.iter().position(|c| c.name == rc.name));
+        if let Some(idx) = pos {
+            let lc = &mut local[idx];
             // Update vCard-sourced fields, preserve local-only fields
             lc.email = rc.email.or(lc.email.clone());
             lc.phone = rc.phone.or(lc.phone.clone());

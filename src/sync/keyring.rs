@@ -16,7 +16,7 @@ pub async fn store_credentials(
     attrs.insert("service", SERVICE_NAME);
     attrs.insert("server", server);
 
-    let secret = format!("{}:{}", username, password);
+    let secret = format!("{}\n{}", username, password);
 
     keyring
         .create_item(
@@ -54,7 +54,7 @@ pub async fn load_credentials(server: &str) -> Result<Option<(String, String)>, 
             .map_err(|e| format!("Failed to read secret: {}", e))?;
         let secret = String::from_utf8(secret_bytes.to_vec())
             .map_err(|e| format!("Invalid UTF-8 in secret: {}", e))?;
-        if let Some((username, password)) = secret.split_once(':') {
+        if let Some((username, password)) = secret.split_once('\n') {
             return Ok(Some((username.to_string(), password.to_string())));
         }
     }

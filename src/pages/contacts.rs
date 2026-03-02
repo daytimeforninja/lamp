@@ -271,7 +271,7 @@ fn card_grid(
 }
 
 pub fn contacts_view(
-    contacts: &[Contact],
+    contacts: &[(usize, &Contact)],
     contact_input: &str,
     flipped: &HashSet<usize>,
     editing: Option<usize>,
@@ -304,11 +304,11 @@ pub fn contacts_view(
                 .width(Length::Fill),
         );
     } else {
-        // Personal section
+        // Personal section (indices are already original indices from caller)
         let personal: Vec<(usize, &Contact)> = contacts
             .iter()
-            .enumerate()
             .filter(|(_, c)| c.category == ContactCategory::Personal)
+            .cloned()
             .collect();
 
         if !personal.is_empty() {
@@ -319,8 +319,8 @@ pub fn contacts_view(
         // Service section
         let service: Vec<(usize, &Contact)> = contacts
             .iter()
-            .enumerate()
             .filter(|(_, c)| c.category == ContactCategory::Service)
+            .cloned()
             .collect();
 
         if !service.is_empty() {

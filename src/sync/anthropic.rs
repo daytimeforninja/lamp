@@ -74,7 +74,10 @@ pub async fn extract_task_from_email(
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
@@ -207,7 +210,10 @@ pub async fn extract_tasks_from_emails_batch(
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
@@ -246,7 +252,15 @@ pub async fn extract_tasks_from_emails_batch(
     let suggestions: Vec<BatchEmailSuggestion> = serde_json::from_str(json_str)
         .map_err(|e| format!("Failed to parse batch suggestions: {} — raw: {}", e, text))?;
 
-    // Zip suggestions with UIDs — if the model returned fewer, pair what we have
+    // Validate count: warn if model returned a different number than expected
+    if suggestions.len() != uids.len() {
+        log::warn!(
+            "AI returned {} suggestions for {} emails — pairing what we can",
+            suggestions.len(),
+            uids.len()
+        );
+    }
+
     let results: Vec<(u32, BatchEmailSuggestion)> = uids
         .into_iter()
         .zip(suggestions)
@@ -315,7 +329,10 @@ pub async fn test_api_key(api_key: &str) -> Result<String, String> {
         ]
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)

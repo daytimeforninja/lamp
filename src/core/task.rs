@@ -91,10 +91,20 @@ pub struct Task {
     pub esc: Option<u32>,
     pub delegated: Option<NaiveDate>,
     pub follow_up: Option<NaiveDate>,
+    /// Non-context tags (tags that don't start with @) for org round-trip.
+    pub extra_tags: Vec<String>,
+    /// Raw time string from SCHEDULED timestamp (e.g. "10:00" or "10:00-11:00").
+    pub scheduled_time: Option<String>,
+    /// Raw time string from DEADLINE timestamp.
+    pub deadline_time: Option<String>,
+    /// Logbook state-change entries (timestamps of DONE transitions).
+    pub logbook_entries: Vec<NaiveDateTime>,
     pub sync_href: Option<String>,
     pub sync_hash: Option<u64>,
     /// Original CalDAV UID string (preserved for case-sensitive roundtrip)
     pub sync_uid: Option<String>,
+    /// CalDAV etag for conditional PUT (avoids overwriting concurrent changes).
+    pub sync_etag: Option<String>,
 }
 
 impl Task {
@@ -116,9 +126,14 @@ impl Task {
             esc: None,
             delegated: None,
             follow_up: None,
+            extra_tags: Vec::new(),
+            scheduled_time: None,
+            deadline_time: None,
+            logbook_entries: Vec::new(),
             sync_href: None,
             sync_hash: None,
             sync_uid: None,
+            sync_etag: None,
         }
     }
 
