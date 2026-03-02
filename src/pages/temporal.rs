@@ -314,7 +314,7 @@ fn event_form_view(
     content = content.push(text::caption(fl!("agenda-event-start")));
     if form.all_day {
         content = content.push(
-            text_input::text_input("YYYY-MM-DD", start_date.clone())
+            text_input::text_input(fl!("event-date-placeholder"), start_date.clone())
                 .on_input(|v| Message::SetEventStart(v))
                 .width(Length::Fill),
         );
@@ -334,12 +334,15 @@ fn event_form_view(
                 ),
         );
     }
+    if let Some(ref err) = form.start_error {
+        content = content.push(text::caption(err.clone()).size(11.0));
+    }
 
     // End
     content = content.push(text::caption(fl!("agenda-event-end")));
     if form.all_day {
         content = content.push(
-            text_input::text_input("YYYY-MM-DD", end_date.clone())
+            text_input::text_input(fl!("event-date-placeholder"), end_date.clone())
                 .on_input(|v| Message::SetEventEnd(v))
                 .width(Length::Fill),
         );
@@ -358,6 +361,9 @@ fn event_form_view(
                         .width(Length::Fixed(80.0)),
                 ),
         );
+    }
+    if let Some(ref err) = form.end_error {
+        content = content.push(text::caption(err.clone()).size(11.0));
     }
 
     // Location

@@ -58,6 +58,8 @@ pub struct NewTaskForm {
     pub scheduled: String,
     pub deadline: String,
     pub notes: String,
+    pub scheduled_error: Option<String>,
+    pub deadline_error: Option<String>,
 }
 
 impl Default for NewTaskForm {
@@ -72,6 +74,8 @@ impl Default for NewTaskForm {
             scheduled: String::new(),
             deadline: String::new(),
             notes: String::new(),
+            scheduled_error: None,
+            deadline_error: None,
         }
     }
 }
@@ -88,6 +92,8 @@ pub struct EventForm {
     pub location: String,
     pub description: String,
     pub calendar_href: String,
+    pub start_error: Option<String>,
+    pub end_error: Option<String>,
 }
 
 impl EventForm {
@@ -103,6 +109,8 @@ impl EventForm {
             location: event.location.clone(),
             description: event.description.clone(),
             calendar_href: event.calendar_href.clone(),
+            start_error: None,
+            end_error: None,
         }
     }
 }
@@ -1467,10 +1475,12 @@ impl Application for Lamp {
 
             Message::CaptureFormScheduled(value) => {
                 self.new_task_form.scheduled = value;
+                self.new_task_form.scheduled_error = None;
             }
 
             Message::CaptureFormDeadline(value) => {
                 self.new_task_form.deadline = value;
+                self.new_task_form.deadline_error = None;
             }
 
             Message::CaptureFormNotes(value) => {
@@ -1478,32 +1488,52 @@ impl Application for Lamp {
             }
 
             Message::CaptureFormSubmit => {
-                let form = &self.new_task_form;
-                let title = sentence_case(&form.title);
+                let title = sentence_case(&self.new_task_form.title);
                 if !title.is_empty() {
+                    // Validate dates before creating task
+                    let sched_result = {
+                        let s = self.new_task_form.scheduled.trim().to_string();
+                        if s.is_empty() {
+                            Ok(None)
+                        } else {
+                            chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                                .map(Some)
+                                .map_err(|e| format!("{}", e))
+                        }
+                    };
+                    let dead_result = {
+                        let s = self.new_task_form.deadline.trim().to_string();
+                        if s.is_empty() {
+                            Ok(None)
+                        } else {
+                            chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                                .map(Some)
+                                .map_err(|e| format!("{}", e))
+                        }
+                    };
+
+                    let mut has_error = false;
+                    if let Err(ref e) = sched_result {
+                        self.new_task_form.scheduled_error = Some(e.clone());
+                        has_error = true;
+                    }
+                    if let Err(ref e) = dead_result {
+                        self.new_task_form.deadline_error = Some(e.clone());
+                        has_error = true;
+                    }
+                    if has_error {
+                        return CosmicTask::none();
+                    }
+
                     let mut task = Task::new(title);
-                    task.state = form.state.clone();
-                    task.priority = form.priority;
-                    task.esc = form.esc;
-                    task.contexts = form.contexts.clone();
-                    task.project = form.project.clone();
-                    task.scheduled = chrono::NaiveDate::parse_from_str(
-                        form.scheduled.trim(), "%Y-%m-%d"
-                    ).map_err(|e| {
-                        if !form.scheduled.trim().is_empty() {
-                            log::warn!("Invalid scheduled date '{}': {}", form.scheduled.trim(), e);
-                        }
-                        e
-                    }).ok();
-                    task.deadline = chrono::NaiveDate::parse_from_str(
-                        form.deadline.trim(), "%Y-%m-%d"
-                    ).map_err(|e| {
-                        if !form.deadline.trim().is_empty() {
-                            log::warn!("Invalid deadline date '{}': {}", form.deadline.trim(), e);
-                        }
-                        e
-                    }).ok();
-                    task.notes = form.notes.trim().to_string();
+                    task.state = self.new_task_form.state.clone();
+                    task.priority = self.new_task_form.priority;
+                    task.esc = self.new_task_form.esc;
+                    task.contexts = self.new_task_form.contexts.clone();
+                    task.project = self.new_task_form.project.clone();
+                    task.scheduled = sched_result.unwrap();
+                    task.deadline = dead_result.unwrap();
+                    task.notes = self.new_task_form.notes.trim().to_string();
 
                     if let Some(ref project_name) = task.project {
                         let project_name = project_name.clone();
@@ -2192,6 +2222,8 @@ impl Application for Lamp {
                     location: String::new(),
                     description: String::new(),
                     calendar_href: default_cal,
+                    start_error: None,
+                    end_error: None,
                 });
             }
 
@@ -2214,24 +2246,28 @@ impl Application for Lamp {
             Message::SetEventStart(value) => {
                 if let Some(ref mut form) = self.event_form {
                     form.start_date = value;
+                    form.start_error = None;
                 }
             }
 
             Message::SetEventStartTime(value) => {
                 if let Some(ref mut form) = self.event_form {
                     form.start_time = value;
+                    form.start_error = None;
                 }
             }
 
             Message::SetEventEnd(value) => {
                 if let Some(ref mut form) = self.event_form {
                     form.end_date = value;
+                    form.end_error = None;
                 }
             }
 
             Message::SetEventEndTime(value) => {
                 if let Some(ref mut form) = self.event_form {
                     form.end_time = value;
+                    form.end_error = None;
                 }
             }
 
@@ -2260,50 +2296,70 @@ impl Application for Lamp {
             }
 
             Message::SubmitEvent => {
-                if let Some(form) = self.event_form.take() {
+                if let Some(mut form) = self.event_form.take() {
                     let title = form.title.trim().to_string();
                     if title.is_empty() {
+                        self.event_form = Some(form);
                         return CosmicTask::none();
                     }
                     let start = parse_form_datetime(&form.start_date, &form.start_time, form.all_day);
                     let end = parse_form_datetime(&form.end_date, &form.end_time, form.all_day);
-                    if let (Some(start), Some(end)) = (start, end) {
-                        let cal_name = self.all_discovered_calendars().iter()
-                            .find(|c| c.href == form.calendar_href)
-                            .map(|c| c.display_name.clone())
-                            .unwrap_or_default();
-                        let mut ev = CalendarEvent::new(title, start, end);
-                        ev.all_day = form.all_day;
-                        ev.location = form.location;
-                        ev.description = form.description;
-                        ev.calendar_href = form.calendar_href;
-                        ev.calendar_name = cal_name;
-                        self.events.push(ev);
-                        self.save_events();
+                    if start.is_none() {
+                        form.start_error = Some(crate::fl!("validation-invalid-date"));
                     }
+                    if end.is_none() {
+                        form.end_error = Some(crate::fl!("validation-invalid-date"));
+                    }
+                    if start.is_none() || end.is_none() {
+                        self.event_form = Some(form);
+                        return CosmicTask::none();
+                    }
+                    let (start, end) = (start.unwrap(), end.unwrap());
+                    let cal_name = self.all_discovered_calendars().iter()
+                        .find(|c| c.href == form.calendar_href)
+                        .map(|c| c.display_name.clone())
+                        .unwrap_or_default();
+                    let mut ev = CalendarEvent::new(title, start, end);
+                    ev.all_day = form.all_day;
+                    ev.location = form.location;
+                    ev.description = form.description;
+                    ev.calendar_href = form.calendar_href;
+                    ev.calendar_name = cal_name;
+                    self.events.push(ev);
+                    self.save_events();
                 }
             }
 
             Message::UpdateEvent(id) => {
-                if let Some(form) = self.event_form.take() {
+                if let Some(mut form) = self.event_form.take() {
                     let title = form.title.trim().to_string();
                     if title.is_empty() {
+                        self.event_form = Some(form);
                         return CosmicTask::none();
                     }
                     let start = parse_form_datetime(&form.start_date, &form.start_time, form.all_day);
                     let end = parse_form_datetime(&form.end_date, &form.end_time, form.all_day);
-                    if let (Some(start), Some(end)) = (start, end) {
-                        if let Some(ev) = self.events.iter_mut().find(|e| e.id == id) {
-                            ev.title = title;
-                            ev.start = start;
-                            ev.end = end;
-                            ev.all_day = form.all_day;
-                            ev.location = form.location;
-                            ev.description = form.description;
-                            ev.calendar_href = form.calendar_href;
-                        }
-                        self.save_events();
+                    if start.is_none() {
+                        form.start_error = Some(crate::fl!("validation-invalid-date"));
                     }
+                    if end.is_none() {
+                        form.end_error = Some(crate::fl!("validation-invalid-date"));
+                    }
+                    if start.is_none() || end.is_none() {
+                        self.event_form = Some(form);
+                        return CosmicTask::none();
+                    }
+                    let (start, end) = (start.unwrap(), end.unwrap());
+                    if let Some(ev) = self.events.iter_mut().find(|e| e.id == id) {
+                        ev.title = title;
+                        ev.start = start;
+                        ev.end = end;
+                        ev.all_day = form.all_day;
+                        ev.location = form.location;
+                        ev.description = form.description;
+                        ev.calendar_href = form.calendar_href;
+                    }
+                    self.save_events();
                 }
             }
 
@@ -2601,18 +2657,24 @@ impl Lamp {
         // Scheduled
         content = content.push(text::title4("Scheduled"));
         content = content.push(
-            text_input::text_input("YYYY-MM-DD", &form.scheduled)
+            text_input::text_input(crate::fl!("event-date-placeholder"), &form.scheduled)
                 .on_input(Message::CaptureFormScheduled)
                 .width(Length::Fill),
         );
+        if let Some(ref err) = form.scheduled_error {
+            content = content.push(text::caption(err.clone()).size(11.0));
+        }
 
         // Deadline
         content = content.push(text::title4("Deadline"));
         content = content.push(
-            text_input::text_input("YYYY-MM-DD", &form.deadline)
+            text_input::text_input(crate::fl!("event-date-placeholder"), &form.deadline)
                 .on_input(Message::CaptureFormDeadline)
                 .width(Length::Fill),
         );
+        if let Some(ref err) = form.deadline_error {
+            content = content.push(text::caption(err.clone()).size(11.0));
+        }
 
         // Notes
         content = content.push(text::title4("Notes"));

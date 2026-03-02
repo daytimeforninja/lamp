@@ -299,6 +299,10 @@ planning-due-today = Due / Scheduled Today
 list-consumed = Consumed
 list-bought = Bought
 
+# Validation
+validation-invalid-date = Invalid date (use YYYY-MM-DD)
+validation-invalid-time = Invalid time (use HH:MM)
+
 # Navigation (additional)
 nav-agenda = Agenda
 nav-settings = Settings
