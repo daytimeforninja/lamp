@@ -1,0 +1,12 @@
+#!/bin/sh
+# This project uses Nix for build management.
+# Gradle is provided by the Nix dev shell — use it directly:
+#
+#   nix develop --command gradle assembleDebug
+#
+# First-time setup:
+#   ./scripts/update-deps-hash.sh
+#   nix develop
+#   gradle assembleDebug
+echo "Use 'nix develop' to enter the build environment, then run 'gradle' directly."
+exit 1

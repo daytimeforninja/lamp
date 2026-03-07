@@ -34,9 +34,11 @@ pub async fn store_credentials(
 /// Load CalDAV credentials from the system keyring.
 /// Returns (username, password) if found.
 pub async fn load_credentials(server: &str) -> Result<Option<(String, String)>, String> {
+    log::debug!("Loading credentials for server: {}", server);
     let keyring = oo7::Keyring::new()
         .await
         .map_err(|e| format!("Failed to connect to keyring: {}", e))?;
+    log::debug!("Keyring connected");
 
     let mut attrs = HashMap::new();
     attrs.insert("service", SERVICE_NAME);
@@ -46,6 +48,7 @@ pub async fn load_credentials(server: &str) -> Result<Option<(String, String)>, 
         .search_items(&attrs)
         .await
         .map_err(|e| format!("Failed to search keyring: {}", e))?;
+    log::debug!("Keyring search returned {} items for server={}", items.len(), server);
 
     if let Some(item) = items.first() {
         let secret_bytes = item

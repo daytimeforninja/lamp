@@ -1689,6 +1689,9 @@ impl Application for Lamp {
                             }
                         }
 
+                        // Rebuild index after deletions so remove_task can find tasks
+                        self.rebuild_task_index();
+
                         // Apply pulled tasks (new + updated)
                         for pulled in &sync_result.pulled {
                             let _existing = self.remove_task(pulled.id);
@@ -3081,6 +3084,7 @@ impl Lamp {
         for project in &self.projects {
             tasks.extend(project.tasks.iter().cloned());
         }
+        tasks.extend(self.habits.iter().map(|h| h.task.clone()));
         tasks
     }
 
