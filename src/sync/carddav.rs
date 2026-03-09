@@ -394,7 +394,7 @@ fn strip_ical_prefix<'a>(line: &'a str, property: &str) -> Option<&'a str> {
     if line.len() < property.len() {
         return None;
     }
-    if !line[..property.len()].eq_ignore_ascii_case(property) {
+    if !line.get(..property.len()).is_some_and(|s| s.eq_ignore_ascii_case(property)) {
         return None;
     }
     let rest = &line[property.len()..];
