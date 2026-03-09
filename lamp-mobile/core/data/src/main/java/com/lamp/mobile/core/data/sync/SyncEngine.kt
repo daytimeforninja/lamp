@@ -240,9 +240,9 @@ class SyncEngine @Inject constructor(
 
     private suspend fun reconstructHabits() {
         val allTasks = taskRepo.getAll()
-        // Identify habits: has recurrence OR has logbook entries (completion history)
+        // Identify habits: has recurrence, logbook entries, or "habit" tag
         val habitTasks = allTasks.filter {
-            it.recurrence != null || it.logbookEntries.isNotEmpty()
+            it.recurrence != null || it.logbookEntries.isNotEmpty() || "habit" in it.extraTags
         }
         Log.d("LampSync", "reconstructHabits: ${allTasks.size} tasks, ${habitTasks.size} habits")
         for (task in habitTasks) {

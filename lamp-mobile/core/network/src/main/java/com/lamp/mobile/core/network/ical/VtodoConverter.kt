@@ -98,6 +98,11 @@ object VtodoConverter {
         // X-LAMP-RECURRENCE
         task.recurrence?.let { lines.add("X-LAMP-RECURRENCE:$it") }
 
+        // X-LAMP-TAGS (non-context tags like "habit")
+        if (task.extraTags.isNotEmpty()) {
+            lines.add(ICalHelpers.foldLine("X-LAMP-TAGS:${task.extraTags.joinToString(",") { ICalHelpers.escapeText(it) }}"))
+        }
+
         // X-LAMP-LOGBOOK (habit completion timestamps)
         if (task.logbookEntries.isNotEmpty()) {
             val entries = task.logbookEntries.joinToString(",") { ICalHelpers.formatDatetime(it) }
@@ -133,6 +138,7 @@ object VtodoConverter {
         var lampFollowUp: LocalDate? = null
         var lampRecurrence: String? = null
         var lampLogbook: String? = null
+        var lampTags: String? = null
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -162,6 +168,7 @@ object VtodoConverter {
                 "X-LAMP-FOLLOW-UP" -> lampFollowUp = ICalHelpers.parseIcalDate(value)
                 "X-LAMP-RECURRENCE" -> lampRecurrence = value
                 "X-LAMP-LOGBOOK" -> lampLogbook = value
+                "X-LAMP-TAGS" -> lampTags = value
             }
         }
 
@@ -206,6 +213,11 @@ object VtodoConverter {
             esc = lampEsc,
             delegated = lampDelegated,
             followUp = lampFollowUp,
+            extraTags = lampTags
+                ?.split(",")
+                ?.map { ICalHelpers.unescapeText(it.trim()) }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList(),
             logbookEntries = lampLogbook
                 ?.split(",")
                 ?.mapNotNull { ICalHelpers.parseIcalDatetime(it.trim()) }
@@ -236,6 +248,9 @@ object VtodoConverter {
         hasher.writeOptionalString(task.delegated?.format(DateTimeFormatter.ISO_LOCAL_DATE))
         hasher.writeOptionalString(task.followUp?.format(DateTimeFormatter.ISO_LOCAL_DATE))
         hasher.writeOptionalString(task.recurrence?.toString())
+        for (tag in task.extraTags) {
+            hasher.writeString(tag)
+        }
         for (entry in task.logbookEntries) {
             hasher.writeString(entry.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
         }

@@ -119,6 +119,14 @@ pub fn task_to_vcalendar(task: &Task) -> String {
         lines.push(format!("X-LAMP-RECURRENCE:{}", recurrence));
     }
 
+    // X-LAMP-TAGS (non-context tags like "habit")
+    if !task.extra_tags.is_empty() {
+        lines.push(format!(
+            "X-LAMP-TAGS:{}",
+            task.extra_tags.iter().map(|t| escape_text(t)).collect::<Vec<_>>().join(",")
+        ));
+    }
+
     // X-LAMP-LOGBOOK (habit completion timestamps)
     if !task.logbook_entries.is_empty() {
         let entries: Vec<String> = task
@@ -162,6 +170,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
     let mut lamp_follow_up: Option<NaiveDate> = None;
     let mut lamp_recurrence: Option<String> = None;
     let mut lamp_logbook: Option<String> = None;
+    let mut lamp_tags: Option<String> = None;
 
     for line in unfolded.lines() {
         let line = line.trim_end();
@@ -204,6 +213,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
                 "X-LAMP-FOLLOW-UP" => lamp_follow_up = parse_ical_date(value),
                 "X-LAMP-RECURRENCE" => lamp_recurrence = Some(value.to_string()),
                 "X-LAMP-LOGBOOK" => lamp_logbook = Some(value.to_string()),
+                "X-LAMP-TAGS" => lamp_tags = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -253,7 +263,9 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
         esc: lamp_esc,
         delegated: lamp_delegated,
         follow_up: lamp_follow_up,
-        extra_tags: Vec::new(),
+        extra_tags: lamp_tags
+            .map(|s| s.split(',').map(|t| unescape_text(t.trim())).collect())
+            .unwrap_or_default(),
         scheduled_time: None,
         deadline_time: None,
         logbook_entries: lamp_logbook
@@ -289,6 +301,7 @@ pub fn task_content_hash(task: &Task) -> u64 {
     task.delegated.map(|d| d.to_string()).hash(&mut hasher);
     task.follow_up.map(|d| d.to_string()).hash(&mut hasher);
     task.recurrence.as_ref().map(|r| r.to_string()).hash(&mut hasher);
+    task.extra_tags.hash(&mut hasher);
     for entry in &task.logbook_entries {
         entry.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
     }
