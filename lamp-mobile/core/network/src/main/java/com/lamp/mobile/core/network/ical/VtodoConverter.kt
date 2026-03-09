@@ -12,8 +12,7 @@ import java.util.UUID
  */
 object VtodoConverter {
 
-    // UUID v5 namespace for converting non-UUID CalDAV UIDs
-    private val CALDAV_UUID_NAMESPACE = UUID.fromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    private val CALDAV_UUID_NAMESPACE = ICalHelpers.CALDAV_UUID_NAMESPACE
 
     fun taskToVcalendar(task: Task): String {
         val lines = mutableListOf<String>()
@@ -99,6 +98,12 @@ object VtodoConverter {
         // X-LAMP-RECURRENCE
         task.recurrence?.let { lines.add("X-LAMP-RECURRENCE:$it") }
 
+        // X-LAMP-LOGBOOK (habit completion timestamps)
+        if (task.logbookEntries.isNotEmpty()) {
+            val entries = task.logbookEntries.joinToString(",") { ICalHelpers.formatDatetime(it) }
+            lines.add(ICalHelpers.foldLine("X-LAMP-LOGBOOK:$entries"))
+        }
+
         lines.add("END:VTODO")
         lines.add("END:VCALENDAR")
 
@@ -127,6 +132,7 @@ object VtodoConverter {
         var lampDelegated: LocalDate? = null
         var lampFollowUp: LocalDate? = null
         var lampRecurrence: String? = null
+        var lampLogbook: String? = null
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -155,6 +161,7 @@ object VtodoConverter {
                 "X-LAMP-DELEGATED" -> lampDelegated = ICalHelpers.parseIcalDate(value)
                 "X-LAMP-FOLLOW-UP" -> lampFollowUp = ICalHelpers.parseIcalDate(value)
                 "X-LAMP-RECURRENCE" -> lampRecurrence = value
+                "X-LAMP-LOGBOOK" -> lampLogbook = value
             }
         }
 
@@ -163,7 +170,7 @@ object VtodoConverter {
         // UID -> UUID: try parse, fallback to UUID v5
         val taskId = uid?.let {
             try { UUID.fromString(it) }
-            catch (_: Exception) { UUID.nameUUIDFrom(CALDAV_UUID_NAMESPACE, it) }
+            catch (_: Exception) { ICalHelpers.uuidV5(CALDAV_UUID_NAMESPACE, it) }
         } ?: UUID.randomUUID()
 
         // State: X-LAMP-STATE takes priority over STATUS
@@ -199,6 +206,10 @@ object VtodoConverter {
             esc = lampEsc,
             delegated = lampDelegated,
             followUp = lampFollowUp,
+            logbookEntries = lampLogbook
+                ?.split(",")
+                ?.mapNotNull { ICalHelpers.parseIcalDatetime(it.trim()) }
+                ?: emptyList(),
             syncUid = uid,
         )
     }
@@ -225,30 +236,13 @@ object VtodoConverter {
         hasher.writeOptionalString(task.delegated?.format(DateTimeFormatter.ISO_LOCAL_DATE))
         hasher.writeOptionalString(task.followUp?.format(DateTimeFormatter.ISO_LOCAL_DATE))
         hasher.writeOptionalString(task.recurrence?.toString())
+        for (entry in task.logbookEntries) {
+            hasher.writeString(entry.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+        }
         return hasher.finish()
     }
 
     /** Build the href for a task in a calendar collection */
     fun vtodoHref(calendarHref: String, taskUid: String): String =
         "${calendarHref.trimEnd('/')}/$taskUid.ics"
-}
-
-/**
- * UUID v5 (name-based SHA-1) using a given namespace.
- * Matches Rust's Uuid::new_v5 behavior.
- */
-private fun UUID.Companion.nameUUIDFrom(namespace: UUID, name: String): UUID {
-    val nsBytes = java.nio.ByteBuffer.allocate(16).run {
-        putLong(namespace.mostSignificantBits)
-        putLong(namespace.leastSignificantBits)
-        array()
-    }
-    val nameBytes = name.toByteArray(Charsets.UTF_8)
-    val data = nsBytes + nameBytes
-    val md = java.security.MessageDigest.getInstance("SHA-1")
-    val hash = md.digest(data)
-    hash[6] = ((hash[6].toInt() and 0x0F) or 0x50).toByte() // version 5
-    hash[8] = ((hash[8].toInt() and 0x3F) or 0x80).toByte() // variant
-    val buf = java.nio.ByteBuffer.wrap(hash)
-    return UUID(buf.getLong(), buf.getLong())
 }

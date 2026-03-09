@@ -70,7 +70,7 @@ object VeventConverter {
 
         val eventId = uid?.let {
             try { UUID.fromString(it) }
-            catch (_: Exception) { UUID.nameUUIDFromBytes(it.toByteArray()) }
+            catch (_: Exception) { ICalHelpers.uuidV5(ICalHelpers.CALDAV_UUID_NAMESPACE, it) }
         } ?: UUID.randomUUID()
 
         return CalendarEvent(
@@ -84,6 +84,7 @@ object VeventConverter {
             status = EventStatus.fromIcal(status ?: "CONFIRMED"),
             calendarHref = calendarHref,
             calendarName = calendarName,
+            syncUid = uid,
         )
     }
 

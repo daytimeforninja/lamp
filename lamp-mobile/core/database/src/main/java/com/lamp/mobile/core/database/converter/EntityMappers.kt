@@ -21,8 +21,10 @@ object EntityMappers {
 
     private fun jsonToStringList(json: String): List<String> {
         if (json.isBlank()) return emptyList()
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { arr.getString(it) }
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (_: Exception) { emptyList() }
     }
 
     private fun uuidListToJson(list: List<UUID>): String =
@@ -30,8 +32,12 @@ object EntityMappers {
 
     private fun jsonToUuidList(json: String): List<UUID> {
         if (json.isBlank()) return emptyList()
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { UUID.fromString(arr.getString(it)) }
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                try { UUID.fromString(arr.getString(i)) } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) { emptyList() }
     }
 
     private fun datetimeListToJson(list: List<LocalDateTime>): String =
@@ -39,8 +45,12 @@ object EntityMappers {
 
     private fun jsonToDatetimeList(json: String): List<LocalDateTime> {
         if (json.isBlank()) return emptyList()
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { LocalDateTime.parse(arr.getString(it), DATETIME_FMT) }
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                try { LocalDateTime.parse(arr.getString(i), DATETIME_FMT) } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) { emptyList() }
     }
 
     private fun completedTasksToJson(tasks: List<CompletedTask>): String {
@@ -57,15 +67,19 @@ object EntityMappers {
 
     private fun jsonToCompletedTasks(json: String): List<CompletedTask> {
         if (json.isBlank()) return emptyList()
-        val arr = JSONArray(json)
-        return (0 until arr.length()).map { i ->
-            val obj = arr.getJSONObject(i)
-            CompletedTask(
-                id = UUID.fromString(obj.getString("id")),
-                title = obj.getString("title"),
-                esc = if (obj.isNull("esc")) null else obj.getInt("esc"),
-            )
-        }
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                try {
+                    val obj = arr.getJSONObject(i)
+                    CompletedTask(
+                        id = UUID.fromString(obj.getString("id")),
+                        title = obj.getString("title"),
+                        esc = if (obj.isNull("esc")) null else obj.getInt("esc"),
+                    )
+                } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) { emptyList() }
     }
 
     private fun linksToJson(links: List<LinkTarget>): String =
@@ -73,11 +87,21 @@ object EntityMappers {
 
     private fun jsonToLinks(json: String): List<LinkTarget> {
         if (json.isBlank()) return emptyList()
-        val arr = JSONArray(json)
-        return (0 until arr.length()).mapNotNull { LinkTarget.fromOrg(arr.getString(it)) }
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                try { LinkTarget.fromOrg(arr.getString(i)) } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) { emptyList() }
     }
 
     // --- Task ---
+
+    private fun parseDate(s: String?): LocalDate? =
+        s?.let { try { LocalDate.parse(it, DATE_FMT) } catch (_: Exception) { null } }
+
+    private fun parseDatetime(s: String?): LocalDateTime? =
+        s?.let { try { LocalDateTime.parse(it, DATETIME_FMT) } catch (_: Exception) { null } }
 
     fun TaskEntity.toDomain(): Task = Task(
         id = UUID.fromString(id),
@@ -85,17 +109,17 @@ object EntityMappers {
         state = TaskState.fromKeyword(state) ?: TaskState.TODO,
         priority = priority?.let { Priority.fromOrg(it) },
         contexts = jsonToStringList(contexts),
-        scheduled = scheduled?.let { LocalDate.parse(it, DATE_FMT) },
-        deadline = deadline?.let { LocalDate.parse(it, DATE_FMT) },
+        scheduled = parseDate(scheduled),
+        deadline = parseDate(deadline),
         recurrence = recurrence?.let { Recurrence.parse(it) },
         notes = notes,
-        created = LocalDateTime.parse(created, DATETIME_FMT),
-        completed = completed?.let { LocalDateTime.parse(it, DATETIME_FMT) },
+        created = parseDatetime(created) ?: LocalDateTime.now(),
+        completed = parseDatetime(completed),
         project = project,
         waitingFor = waitingFor,
         esc = esc,
-        delegated = delegated?.let { LocalDate.parse(it, DATE_FMT) },
-        followUp = followUp?.let { LocalDate.parse(it, DATE_FMT) },
+        delegated = parseDate(delegated),
+        followUp = parseDate(followUp),
         extraTags = jsonToStringList(extraTags),
         scheduledTime = scheduledTime,
         deadlineTime = deadlineTime,
@@ -174,7 +198,7 @@ object EntityMappers {
     // --- DayPlan ---
 
     fun DayPlanEntity.toDomain(): DayPlan = DayPlan(
-        date = LocalDate.parse(date, DATE_FMT),
+        date = parseDate(date) ?: LocalDate.now(),
         spoonBudget = spoonBudget,
         activeContexts = jsonToStringList(activeContexts),
         confirmedTaskIds = jsonToUuidList(confirmedTaskIds),
@@ -200,8 +224,8 @@ object EntityMappers {
     fun CalendarEventEntity.toDomain(): CalendarEvent = CalendarEvent(
         id = UUID.fromString(id),
         title = title,
-        start = LocalDateTime.parse(start, DATETIME_FMT),
-        end = LocalDateTime.parse(end, DATETIME_FMT),
+        start = parseDatetime(start) ?: LocalDateTime.now(),
+        end = parseDatetime(end) ?: LocalDateTime.now(),
         allDay = allDay,
         location = location,
         description = description,
@@ -210,6 +234,8 @@ object EntityMappers {
         calendarName = calendarName,
         syncHref = syncHref,
         syncHash = syncHash,
+        syncEtag = syncEtag,
+        syncUid = syncUid,
     )
 
     fun CalendarEvent.toEntity(syncDirty: Boolean = false, syncDeleted: Boolean = false): CalendarEventEntity = CalendarEventEntity(
@@ -225,8 +251,10 @@ object EntityMappers {
         calendarName = calendarName,
         syncHref = syncHref,
         syncHash = syncHash,
+        syncEtag = syncEtag,
         syncDirty = syncDirty,
         syncDeleted = syncDeleted,
+        syncUid = syncUid,
     )
 
     // --- Note ---
@@ -238,8 +266,8 @@ object EntityMappers {
         tags = jsonToStringList(tags),
         links = jsonToLinks(links),
         source = source,
-        created = LocalDateTime.parse(created, DATETIME_FMT),
-        modified = LocalDateTime.parse(modified, DATETIME_FMT),
+        created = parseDatetime(created) ?: LocalDateTime.now(),
+        modified = parseDatetime(modified) ?: LocalDateTime.now(),
         syncEtag = syncEtag,
     )
 
@@ -266,7 +294,7 @@ object EntityMappers {
         signal = signal,
         preferredMethod = preferredMethod,
         category = ContactCategory.fromString(category),
-        lastContacted = lastContacted?.let { LocalDate.parse(it, DATE_FMT) },
+        lastContacted = parseDate(lastContacted),
         syncHref = syncHref,
         syncEtag = syncEtag,
         syncDirty = syncDirty,
@@ -295,9 +323,9 @@ object EntityMappers {
         id = UUID.fromString(id),
         title = title,
         notes = notes,
-        created = LocalDateTime.parse(created, DATETIME_FMT),
+        created = parseDatetime(created) ?: LocalDateTime.now(),
         done = done,
-        kind = ListKind.valueOf(kind),
+        kind = try { ListKind.valueOf(kind) } catch (_: Exception) { ListKind.MEDIA },
     )
 
     fun ListItem.toEntity(): ListItemEntity = ListItemEntity(
@@ -316,7 +344,7 @@ object EntityMappers {
         name = name,
         url = url,
         notes = notes,
-        lastChecked = lastChecked?.let { LocalDate.parse(it, DATE_FMT) },
+        lastChecked = parseDate(lastChecked),
     )
 
     fun Account.toEntity(): AccountEntity = AccountEntity(

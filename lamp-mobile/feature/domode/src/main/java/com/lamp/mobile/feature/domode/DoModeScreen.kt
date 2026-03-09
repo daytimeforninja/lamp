@@ -5,20 +5,24 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lamp.mobile.core.common.ui.SpoonMeter
+import com.lamp.mobile.core.common.ui.SyncPullRefreshBox
 import com.lamp.mobile.core.common.ui.TaskRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DoModeScreen(
+    onNavigateToTaskDetail: (java.util.UUID) -> Unit = {},
     viewModel: DoModeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val plan = state.dayPlan
 
+    SyncPullRefreshBox(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Do Mode") },
@@ -33,10 +37,13 @@ fun DoModeScreen(
             modifier = Modifier.padding(16.dp),
         )
 
-        if (state.confirmedTasks.isEmpty()) {
+        val hasContent = state.confirmedTasks.isNotEmpty() ||
+            state.pickedMedia.isNotEmpty() || state.pickedShopping.isNotEmpty()
+
+        if (!hasContent) {
             Box(
                 modifier = Modifier.fillMaxSize(),
-                contentAlignment = androidx.compose.ui.Alignment.Center,
+                contentAlignment = Alignment.Center,
             ) {
                 Text("No tasks confirmed for today.\nGo to Daily Planning first.",
                     style = MaterialTheme.typography.bodyLarge,
@@ -44,20 +51,23 @@ fun DoModeScreen(
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                item {
-                    Text(
-                        "${state.confirmedTasks.size} tasks remaining",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(16.dp),
-                    )
-                }
-                items(state.confirmedTasks, key = { it.id }) { task ->
-                    TaskRow(
-                        task = task,
-                        onToggleDone = { viewModel.onIntent(DoModeIntent.MarkDone(task.id)) },
-                        onClick = { },
-                        showProject = true,
-                    )
+                // Tasks
+                if (state.confirmedTasks.isNotEmpty()) {
+                    item {
+                        Text(
+                            "${state.confirmedTasks.size} tasks remaining",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
+                    items(state.confirmedTasks, key = { it.id }) { task ->
+                        TaskRow(
+                            task = task,
+                            onToggleDone = { viewModel.onIntent(DoModeIntent.MarkDone(task.id)) },
+                            onClick = { onNavigateToTaskDetail(task.id) },
+                            showProject = true,
+                        )
+                    }
                 }
 
                 // Completed tasks
@@ -82,7 +92,48 @@ fun DoModeScreen(
                         )
                     }
                 }
+
+                // Picked media
+                if (state.pickedMedia.isNotEmpty()) {
+                    item {
+                        Text("Media", style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(16.dp))
+                    }
+                    items(state.pickedMedia, key = { "media-${it.id}" }) { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = item.done,
+                                onCheckedChange = { viewModel.onIntent(DoModeIntent.ToggleMediaDone(item.id)) },
+                            )
+                            Text(item.title, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+
+                // Picked shopping
+                if (state.pickedShopping.isNotEmpty()) {
+                    item {
+                        Text("Shopping", style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(16.dp))
+                    }
+                    items(state.pickedShopping, key = { "shop-${it.id}" }) { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = item.done,
+                                onCheckedChange = { viewModel.onIntent(DoModeIntent.ToggleShoppingDone(item.id)) },
+                            )
+                            Text(item.title, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
             }
         }
+    }
     }
 }

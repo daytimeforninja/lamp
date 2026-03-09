@@ -51,6 +51,9 @@ interface TaskDao {
     @Query("UPDATE tasks SET syncDirty = 0, syncHash = :hash, syncEtag = :etag, syncHref = :href WHERE id = :id")
     suspend fun markSynced(id: String, hash: Long, etag: String, href: String)
 
+    @Query("UPDATE tasks SET project = NULL WHERE project = :projectName")
+    suspend fun clearProject(projectName: String)
+
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0")
     suspend fun getAll(): List<TaskEntity>
 }

@@ -36,7 +36,9 @@ class HabitRepositoryImpl @Inject constructor(
     }
 
     override suspend fun save(habit: Habit) {
-        taskDao.upsert(habit.task.toEntity(syncDirty = true, location = "habits"))
+        // Copy completions into task.logbookEntries so they get synced via X-LAMP-LOGBOOK
+        val taskWithLogbook = habit.task.copy(logbookEntries = habit.completions)
+        taskDao.upsert(taskWithLogbook.toEntity(syncDirty = true, location = "habits"))
         habitDao.upsert(habit.toEntity())
     }
 
@@ -46,6 +48,11 @@ class HabitRepositoryImpl @Inject constructor(
 
     override suspend fun delete(taskId: UUID) {
         habitDao.deleteByTaskId(taskId.toString())
-        taskDao.deleteById(taskId.toString())
+        val existing = taskDao.getById(taskId.toString())
+        if (existing?.syncHref != null) {
+            taskDao.upsert(existing.copy(syncDeleted = true, syncDirty = true))
+        } else {
+            taskDao.deleteById(taskId.toString())
+        }
     }
 }

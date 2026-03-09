@@ -3,6 +3,7 @@ package com.lamp.mobile.core.network.carddav
 import com.lamp.mobile.core.model.Contact
 import com.lamp.mobile.core.model.ContactCategory
 import com.lamp.mobile.core.network.MethodPreservingRedirectInterceptor
+import com.lamp.mobile.core.network.caldav.CalDavClient
 import com.lamp.mobile.core.network.caldav.WebDavXmlParser
 import com.lamp.mobile.core.network.upgradeToHttps
 import io.ktor.client.*
@@ -68,21 +69,38 @@ class CardDavClient(
                 <d:prop><d:current-user-principal/></d:prop>
             </d:propfind>""".trimIndent()
 
+        val errors = mutableListOf<String>()
+
         // Try .well-known first (RFC 6764) — redirects followed by interceptor
         try {
             val xml = propfind(resolveUrl("/.well-known/carddav"), 0, body)
             val principal = WebDavXmlParser.extractHref(xml, "current-user-principal")
             if (principal != null) return principal
-        } catch (_: Exception) { /* .well-known might not exist */ }
+        } catch (e: Exception) {
+            errors.add(".well-known/carddav: ${e.message}")
+        }
 
         // Fallback to PROPFIND on base URL
         try {
             val xml = propfind(baseUrl, 0, body)
             val principal = WebDavXmlParser.extractHref(xml, "current-user-principal")
             if (principal != null) return principal
-        } catch (_: Exception) { /* ignore */ }
+        } catch (e: Exception) {
+            errors.add("base URL: ${e.message}")
+        }
 
-        return "/dav/principals/user/$username/"
+        // Fastmail-style fallback — validate it actually works
+        val fallback = "/dav/principals/user/$username/"
+        try {
+            val xml = propfind(resolveUrl(fallback), 0, body)
+            val principal = WebDavXmlParser.extractHref(xml, "current-user-principal")
+            if (principal != null) return principal
+            return fallback
+        } catch (e: Exception) {
+            errors.add("fallback: ${e.message}")
+        }
+
+        throw Exception("Could not find CardDAV principal. ${errors.joinToString("; ")}")
     }
 
     private suspend fun findAddressbookHomeSet(principal: String): String {
@@ -93,7 +111,7 @@ class CardDavClient(
 
         val xml = propfind(resolveUrl(principal), 0, body)
         return WebDavXmlParser.extractHref(xml, "addressbook-home-set")
-            ?: throw Exception("No addressbook-home-set found")
+            ?: throw Exception("No addressbook-home-set found at ${resolveUrl(principal)}")
     }
 
     private suspend fun listAddressbooks(homeSet: String): List<String> {
@@ -128,6 +146,10 @@ class CardDavClient(
         }
 
         val xml = response.bodyAsText()
+        if (!response.status.isSuccess() && response.status != HttpStatusCode.MultiStatus) {
+            throw Exception("REPORT $href failed: ${response.status} — ${xml.take(200)}")
+        }
+        CalDavClient.requireXml(xml, response.status)
         return WebDavXmlParser.parseMultistatus(xml).mapNotNull { resp ->
             val vcard = resp.calendarData ?: return@mapNotNull null
             val contact = parseVcard(vcard) ?: return@mapNotNull null
@@ -148,7 +170,7 @@ class CardDavClient(
                 HeaderValueParam("charset", "utf-8")
             )))
             if (etag != null) {
-                header("If-Match", etag)
+                header("If-Match", "\"$etag\"")
             }
             setBody(vcard)
         }
@@ -188,7 +210,12 @@ class CardDavClient(
             contentType(ContentType.Application.Xml)
             setBody(body)
         }
-        return response.bodyAsText()
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess() && response.status != HttpStatusCode.MultiStatus) {
+            throw Exception("PROPFIND $url failed: ${response.status} — ${text.take(200)}")
+        }
+        CalDavClient.requireXml(text, response.status)
+        return text
     }
 
     fun close() = client.close()

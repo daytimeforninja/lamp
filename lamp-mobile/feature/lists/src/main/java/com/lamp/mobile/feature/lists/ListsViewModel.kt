@@ -6,6 +6,7 @@ import com.lamp.mobile.core.data.repository.ListItemRepository
 import com.lamp.mobile.core.model.ListItem
 import com.lamp.mobile.core.model.ListKind
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import java.util.UUID
@@ -30,12 +31,15 @@ class ListsViewModel @Inject constructor(
     private val listItemRepo: ListItemRepository,
 ) : MviViewModel<ListsUiState, ListsIntent, Nothing>(ListsUiState()) {
 
+    private var observeJob: Job? = null
+
     init {
         observeKind(ListKind.MEDIA)
     }
 
     private fun observeKind(kind: ListKind) {
-        listItemRepo.observeByKind(kind)
+        observeJob?.cancel()
+        observeJob = listItemRepo.observeByKind(kind)
             .onEach { items -> updateState { copy(items = items) } }
             .launchIn(viewModelScope)
     }

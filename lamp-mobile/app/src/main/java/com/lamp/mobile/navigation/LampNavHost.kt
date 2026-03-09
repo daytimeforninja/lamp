@@ -3,8 +3,10 @@ package com.lamp.mobile.navigation
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import com.lamp.mobile.feature.inbox.InboxScreen
 import com.lamp.mobile.feature.nextactions.NextActionsScreen
 import com.lamp.mobile.feature.projects.ProjectsScreen
@@ -20,26 +22,50 @@ import com.lamp.mobile.feature.contacts.ContactsScreen
 import com.lamp.mobile.feature.review.ReviewScreen
 import com.lamp.mobile.feature.settings.SettingsScreen
 import com.lamp.mobile.feature.conflicts.ConflictsScreen
+import com.lamp.mobile.feature.taskdetail.TaskDetailScreen
+import com.lamp.mobile.feature.alltasks.AllTasksScreen
+import com.lamp.mobile.feature.agenda.AgendaScreen
+import com.lamp.mobile.feature.accounts.AccountsScreen
 
 @Composable
 fun LampNavHost(
     navController: NavHostController,
     modifier: Modifier = Modifier,
 ) {
+    val navigateToTaskDetail: (java.util.UUID) -> Unit = { taskId ->
+        navController.navigate("task_detail/$taskId")
+    }
+
     NavHost(
         navController = navController,
         startDestination = TopLevelDestination.INBOX.route,
         modifier = modifier,
     ) {
-        composable(TopLevelDestination.DAILY_PLANNING.route) { DailyPlanningScreen() }
-        composable(TopLevelDestination.INBOX.route) { InboxScreen() }
-        composable(TopLevelDestination.NEXT_ACTIONS.route) { NextActionsScreen() }
-        composable(TopLevelDestination.DO_MODE.route) { DoModeScreen() }
+        composable(TopLevelDestination.DAILY_PLANNING.route) {
+            DailyPlanningScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(TopLevelDestination.INBOX.route) {
+            InboxScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(TopLevelDestination.NEXT_ACTIONS.route) {
+            NextActionsScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(TopLevelDestination.DO_MODE.route) {
+            DoModeScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
 
-        composable(DrawerDestination.ALL_TASKS.route) { NextActionsScreen() } // Reuse with different filter
-        composable(DrawerDestination.PROJECTS.route) { ProjectsScreen() }
-        composable(DrawerDestination.WAITING.route) { WaitingScreen() }
-        composable(DrawerDestination.SOMEDAY.route) { SomedayScreen() }
+        composable(DrawerDestination.ALL_TASKS.route) {
+            AllTasksScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(DrawerDestination.PROJECTS.route) {
+            ProjectsScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(DrawerDestination.WAITING.route) {
+            WaitingScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(DrawerDestination.SOMEDAY.route) {
+            SomedayScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
         composable(DrawerDestination.HABITS.route) { HabitsScreen() }
         composable(DrawerDestination.CALENDAR.route) { CalendarScreen() }
         composable(DrawerDestination.NOTES.route) { NotesScreen() }
@@ -49,5 +75,17 @@ fun LampNavHost(
         composable(DrawerDestination.REVIEW.route) { ReviewScreen() }
         composable(DrawerDestination.SETTINGS.route) { SettingsScreen() }
         composable(DrawerDestination.CONFLICTS.route) { ConflictsScreen() }
+        composable(DrawerDestination.AGENDA.route) {
+            AgendaScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
+        composable(DrawerDestination.ACCOUNTS.route) { AccountsScreen() }
+
+        // Task detail route
+        composable(
+            route = "task_detail/{taskId}",
+            arguments = listOf(navArgument("taskId") { type = NavType.StringType }),
+        ) {
+            TaskDetailScreen(onBack = { navController.popBackStack() })
+        }
     }
 }

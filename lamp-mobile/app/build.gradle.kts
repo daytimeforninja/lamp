@@ -61,6 +61,10 @@ dependencies {
     implementation(project(":feature:review"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:conflicts"))
+    implementation(project(":feature:taskdetail"))
+    implementation(project(":feature:alltasks"))
+    implementation(project(":feature:agenda"))
+    implementation(project(":feature:accounts"))
     implementation(project(":sync"))
 
     implementation(libs.core.ktx)
@@ -75,7 +79,10 @@ dependencies {
     implementation(libs.lifecycle.viewmodel)
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)
+    implementation(libs.workmanager)
+    implementation(libs.workmanager.hilt)
     ksp(libs.hilt.compiler)
+    ksp(libs.hilt.androidx.compiler)
 
     debugImplementation(libs.compose.ui.tooling)
 

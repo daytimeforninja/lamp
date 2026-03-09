@@ -19,10 +19,12 @@
           androidComposition = pkgs.androidenv.composeAndroidPackages {
             buildToolsVersions = [ "34.0.0" "35.0.0" ];
             platformVersions = [ "35" ];
-            includeEmulator = false;
+            includeEmulator = true;
             includeNDK = false;
             includeSources = false;
-            includeSystemImages = false;
+            includeSystemImages = true;
+            systemImageTypes = [ "default" ];
+            abiVersions = [ "x86_64" ];
           };
         in
         { inherit pkgs; androidSdk = androidComposition.androidsdk; };
@@ -39,6 +41,41 @@
           gradleWrapper = pkgs.writeShellScriptBin "gradle" ''
             exec ${pkgs.gradle}/bin/gradle \
               "-Pandroid.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/35.0.0/aapt2" \
+              "$@"
+          '';
+
+          # Script to create AVD and launch emulator
+          launchEmulator = pkgs.writeShellScriptBin "lamp-emulator" ''
+            set -euo pipefail
+            AVD_NAME="lamp-test"
+            AVD_HOME="$HOME/proj/tmp/android-avd"
+            SDKROOT="${androidSdk}/libexec/android-sdk"
+            AVDMANAGER="$(find "$SDKROOT/cmdline-tools" -name avdmanager -type f | head -1)"
+            export ANDROID_AVD_HOME="$AVD_HOME"
+
+            if [ -z "$AVDMANAGER" ]; then
+              echo "Error: avdmanager not found in $SDKROOT/cmdline-tools"
+              exit 1
+            fi
+
+            mkdir -p "$AVD_HOME"
+
+            # Create AVD if it doesn't exist
+            if [ ! -d "$AVD_HOME/$AVD_NAME.avd" ]; then
+              echo "Creating AVD '$AVD_NAME' in $AVD_HOME..."
+              yes "" | "$AVDMANAGER" create avd \
+                --name "$AVD_NAME" \
+                --package "system-images;android-35;default;x86_64" \
+                --device "pixel_6" \
+                --force
+              echo "AVD created."
+            fi
+
+            echo "Starting emulator..."
+            exec "$SDKROOT/emulator/emulator" \
+              -avd "$AVD_NAME" \
+              -gpu swiftshader_indirect \
+              -no-snapshot \
               "$@"
           '';
 
@@ -107,6 +144,7 @@
               kotlin
               jdk17
               fetchDeps
+              launchEmulator
             ];
 
             ANDROID_HOME = "${androidSdk}/libexec/android-sdk";

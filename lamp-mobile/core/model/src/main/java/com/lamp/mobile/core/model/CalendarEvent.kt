@@ -30,4 +30,6 @@ data class CalendarEvent(
     val calendarName: String = "",
     val syncHref: String? = null,
     val syncHash: Long? = null,
+    val syncEtag: String? = null,
+    val syncUid: String? = null,
 )

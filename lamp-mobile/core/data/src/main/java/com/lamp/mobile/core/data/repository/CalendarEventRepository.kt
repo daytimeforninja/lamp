@@ -9,9 +9,10 @@ interface CalendarEventRepository {
     fun observeAll(): Flow<List<CalendarEvent>>
     fun observeInRange(from: LocalDateTime, to: LocalDateTime): Flow<List<CalendarEvent>>
     suspend fun getById(id: UUID): CalendarEvent?
-    suspend fun save(event: CalendarEvent)
-    suspend fun saveAll(events: List<CalendarEvent>)
+    suspend fun save(event: CalendarEvent, markDirty: Boolean = true)
+    suspend fun saveAll(events: List<CalendarEvent>, markDirty: Boolean = true)
     suspend fun delete(id: UUID)
     suspend fun deleteByCalendar(calendarHref: String)
     suspend fun getByHref(href: String): CalendarEvent?
+    suspend fun markSynced(id: UUID, hash: Long, etag: String, href: String)
 }

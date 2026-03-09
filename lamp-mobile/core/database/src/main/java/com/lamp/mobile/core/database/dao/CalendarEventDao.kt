@@ -6,10 +6,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface CalendarEventDao {
-    @Query("SELECT * FROM calendar_events ORDER BY start ASC")
+    @Query("SELECT * FROM calendar_events WHERE syncDeleted = 0 ORDER BY start ASC")
     fun observeAll(): Flow<List<CalendarEventEntity>>
 
-    @Query("SELECT * FROM calendar_events WHERE start >= :from AND start < :to ORDER BY start ASC")
+    @Query("SELECT * FROM calendar_events WHERE syncDeleted = 0 AND start >= :from AND start < :to ORDER BY start ASC")
     fun observeInRange(from: String, to: String): Flow<List<CalendarEventEntity>>
 
     @Query("SELECT * FROM calendar_events WHERE id = :id")
@@ -32,4 +32,13 @@ interface CalendarEventDao {
 
     @Query("SELECT * FROM calendar_events")
     suspend fun getAll(): List<CalendarEventEntity>
+
+    @Query("SELECT * FROM calendar_events WHERE syncDirty = 1 AND syncDeleted = 0")
+    suspend fun getDirty(): List<CalendarEventEntity>
+
+    @Query("SELECT * FROM calendar_events WHERE syncDeleted = 1")
+    suspend fun getDeleted(): List<CalendarEventEntity>
+
+    @Query("UPDATE calendar_events SET syncDirty = 0, syncHash = :hash, syncEtag = :etag, syncHref = :href WHERE id = :id")
+    suspend fun markSynced(id: String, hash: Long, etag: String, href: String)
 }

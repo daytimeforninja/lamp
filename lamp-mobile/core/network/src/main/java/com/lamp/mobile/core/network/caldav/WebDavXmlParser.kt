@@ -179,8 +179,11 @@ object WebDavXmlParser {
     }
 
     private fun createParser(xml: String): XmlPullParser {
+        if (xml.isBlank()) {
+            throw Exception("Server returned empty response")
+        }
         val factory = XmlPullParserFactory.newInstance()
-        factory.isNamespaceAware = false // We handle namespaces by tag name
+        factory.isNamespaceAware = true
         val parser = factory.newPullParser()
         parser.setInput(xml.reader())
         return parser

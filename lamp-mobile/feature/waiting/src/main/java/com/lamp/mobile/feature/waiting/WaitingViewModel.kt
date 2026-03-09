@@ -34,7 +34,11 @@ class WaitingViewModel @Inject constructor(
         when (intent) {
             is WaitingIntent.ToggleDone -> {
                 val task = taskRepo.getById(intent.taskId) ?: return
-                taskRepo.save(task.complete())
+                if (task.state.isDone) {
+                    taskRepo.save(task.copy(state = TaskState.WAITING, completed = null))
+                } else {
+                    taskRepo.save(task.complete())
+                }
             }
         }
     }

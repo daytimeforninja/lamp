@@ -8,12 +8,7 @@ pluginManagement {
             // Fallback: only used inside the Nix FOD build to download deps.
             // Nix is the process connecting, not Gradle at dev time.
             mavenCentral()
-            maven {
-                url = uri("https://maven.google.com")
-                content { includeGroupByRegex("com\\.android.*") }
-                content { includeGroupByRegex("androidx.*") }
-                content { includeGroupByRegex("com\\.google.*") }
-            }
+            maven { url = uri("https://maven.google.com") }
             gradlePluginPortal()
         }
     }
@@ -27,12 +22,7 @@ dependencyResolutionManagement {
             maven { url = uri("file://$mavenRepo") }
         } else {
             mavenCentral()
-            maven {
-                url = uri("https://maven.google.com")
-                content { includeGroupByRegex("com\\.android.*") }
-                content { includeGroupByRegex("androidx.*") }
-                content { includeGroupByRegex("com\\.google.*") }
-            }
+            maven { url = uri("https://maven.google.com") }
         }
     }
 }
@@ -61,4 +51,8 @@ include(":feature:contacts")
 include(":feature:review")
 include(":feature:settings")
 include(":feature:conflicts")
+include(":feature:taskdetail")
+include(":feature:alltasks")
+include(":feature:agenda")
+include(":feature:accounts")
 include(":sync")

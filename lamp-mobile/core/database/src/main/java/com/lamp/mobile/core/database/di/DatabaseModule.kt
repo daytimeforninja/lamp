@@ -19,6 +19,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): LampDatabase =
         Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
+            .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
             .build()
 
     @Provides fun provideTaskDao(db: LampDatabase): TaskDao = db.taskDao()
@@ -30,4 +31,5 @@ object DatabaseModule {
     @Provides fun provideContactDao(db: LampDatabase): ContactDao = db.contactDao()
     @Provides fun provideListItemDao(db: LampDatabase): ListItemDao = db.listItemDao()
     @Provides fun provideSyncMetadataDao(db: LampDatabase): SyncMetadataDao = db.syncMetadataDao()
+    @Provides fun provideAccountDao(db: LampDatabase): AccountDao = db.accountDao()
 }

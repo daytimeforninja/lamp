@@ -37,7 +37,11 @@ class SomedayViewModel @Inject constructor(
             }
             is SomedayIntent.ToggleDone -> {
                 val task = taskRepo.getById(intent.taskId) ?: return
-                taskRepo.save(task.complete())
+                if (task.state.isDone) {
+                    taskRepo.save(task.copy(state = TaskState.SOMEDAY, completed = null))
+                } else {
+                    taskRepo.save(task.complete())
+                }
             }
         }
     }

@@ -31,6 +31,7 @@ dependencies {
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+    ksp(libs.hilt.androidx.compiler)
     implementation(libs.workmanager)
     implementation(libs.workmanager.hilt)
     implementation(libs.coroutines.core)

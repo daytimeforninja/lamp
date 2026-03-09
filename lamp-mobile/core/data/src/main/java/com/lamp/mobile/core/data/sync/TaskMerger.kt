@@ -24,6 +24,10 @@ object TaskMerger {
             followUp = merge(local.followUp, remote.followUp, base.followUp),
             completed = merge(local.completed, remote.completed, base.completed),
             recurrence = merge(local.recurrence, remote.recurrence, base.recurrence),
+            extraTags = merge(local.extraTags, remote.extraTags, base.extraTags),
+            scheduledTime = merge(local.scheduledTime, remote.scheduledTime, base.scheduledTime),
+            deadlineTime = merge(local.deadlineTime, remote.deadlineTime, base.deadlineTime),
+            logbookEntries = merge(local.logbookEntries, remote.logbookEntries, base.logbookEntries),
         )
     }
 

@@ -39,8 +39,13 @@ class ProjectRepositoryImpl @Inject constructor(
     override suspend fun save(project: Project) =
         projectDao.upsert(project.toEntity())
 
-    override suspend fun delete(id: UUID) =
+    override suspend fun delete(id: UUID) {
+        val project = projectDao.getById(id.toString())
+        if (project != null) {
+            taskDao.clearProject(project.name)
+        }
         projectDao.deleteById(id.toString())
+    }
 
     override suspend fun getAll(): List<Project> =
         projectDao.getAll().map { it.toDomain() }

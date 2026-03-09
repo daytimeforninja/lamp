@@ -19,4 +19,5 @@ abstract class DataModule {
     @Binds abstract fun bindContactRepository(impl: ContactRepositoryImpl): ContactRepository
     @Binds abstract fun bindListItemRepository(impl: ListItemRepositoryImpl): ListItemRepository
     @Binds abstract fun bindSyncMetadataRepository(impl: SyncMetadataRepositoryImpl): SyncMetadataRepository
+    @Binds abstract fun bindAccountRepository(impl: AccountRepositoryImpl): AccountRepository
 }

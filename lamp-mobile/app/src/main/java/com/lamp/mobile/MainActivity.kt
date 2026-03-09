@@ -5,17 +5,23 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.lamp.mobile.core.common.ui.LocalSyncTrigger
+import com.lamp.mobile.core.model.AppMode
 import com.lamp.mobile.navigation.DrawerDestination
 import com.lamp.mobile.navigation.LampNavHost
 import com.lamp.mobile.navigation.TopLevelDestination
+import com.lamp.mobile.sync.SyncWorker
 import com.lamp.mobile.ui.theme.LampTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -41,11 +47,15 @@ fun LampApp() {
     val scope = rememberCoroutineScope()
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStackEntry?.destination?.route
+    var appMode by remember { mutableStateOf(AppMode.PLAN) }
+    val context = LocalContext.current
 
+    CompositionLocalProvider(LocalSyncTrigger provides { SyncWorker.enqueueOneTimeSync(context) }) {
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = appMode == AppMode.PLAN,
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "Lamp",
                     modifier = Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
@@ -73,30 +83,68 @@ fun LampApp() {
     ) {
         Scaffold(
             bottomBar = {
-                NavigationBar {
-                    TopLevelDestination.entries.forEach { dest ->
+                if (appMode == AppMode.DO) {
+                    // Simplified bottom bar in Do mode
+                    NavigationBar {
                         NavigationBarItem(
-                            selected = currentRoute == dest.route ||
-                                (dest == TopLevelDestination.MORE && DrawerDestination.entries.any { it.route == currentRoute }),
+                            selected = currentRoute == TopLevelDestination.DO_MODE.route,
                             onClick = {
-                                if (dest == TopLevelDestination.MORE) {
-                                    scope.launch { drawerState.open() }
-                                } else {
-                                    navController.navigate(dest.route) {
-                                        popUpTo(navController.graph.startDestinationId) { saveState = true }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
+                                navController.navigate(TopLevelDestination.DO_MODE.route) {
+                                    popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
                             },
-                            icon = {
-                                Icon(
-                                    if (currentRoute == dest.route) dest.selectedIcon else dest.unselectedIcon,
-                                    contentDescription = dest.label,
-                                )
-                            },
-                            label = { Text(dest.label) },
+                            icon = { Icon(TopLevelDestination.DO_MODE.selectedIcon, "Do") },
+                            label = { Text("Do") },
                         )
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = {
+                                appMode = AppMode.PLAN
+                                navController.navigate(TopLevelDestination.DAILY_PLANNING.route) {
+                                    popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            icon = { Icon(TopLevelDestination.DAILY_PLANNING.unselectedIcon, "Plan Mode") },
+                            label = { Text("Plan Mode") },
+                        )
+                    }
+                } else {
+                    NavigationBar {
+                        TopLevelDestination.entries.forEach { dest ->
+                            NavigationBarItem(
+                                selected = currentRoute == dest.route ||
+                                    (dest == TopLevelDestination.MORE && DrawerDestination.entries.any { it.route == currentRoute }),
+                                onClick = {
+                                    if (dest == TopLevelDestination.MORE) {
+                                        scope.launch { drawerState.open() }
+                                    } else if (dest == TopLevelDestination.DO_MODE) {
+                                        appMode = AppMode.DO
+                                        navController.navigate(dest.route) {
+                                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    } else {
+                                        navController.navigate(dest.route) {
+                                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                },
+                                icon = {
+                                    Icon(
+                                        if (currentRoute == dest.route) dest.selectedIcon else dest.unselectedIcon,
+                                        contentDescription = dest.label,
+                                    )
+                                },
+                                label = { Text(dest.label) },
+                            )
+                        }
                     }
                 }
             },
@@ -107,4 +155,5 @@ fun LampApp() {
             )
         }
     }
+    } // CompositionLocalProvider
 }

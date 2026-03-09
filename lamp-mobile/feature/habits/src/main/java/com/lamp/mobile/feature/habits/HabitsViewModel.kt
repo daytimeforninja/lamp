@@ -34,7 +34,14 @@ class HabitsViewModel @Inject constructor(
 
     init {
         habitRepo.observeAll()
-            .onEach { habits -> updateState { copy(habits = habits) } }
+            .onEach { habits ->
+                val today = LocalDate.now()
+                val sorted = habits.sortedWith(
+                    compareByDescending<Habit> { it.isDue(today) }
+                        .thenByDescending { it.streak }
+                )
+                updateState { copy(habits = sorted) }
+            }
             .launchIn(viewModelScope)
     }
 

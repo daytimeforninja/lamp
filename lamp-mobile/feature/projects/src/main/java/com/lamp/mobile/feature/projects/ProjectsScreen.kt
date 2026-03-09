@@ -14,62 +14,68 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lamp.mobile.core.common.ui.QuickCaptureBar
+import com.lamp.mobile.core.common.ui.SyncPullRefreshBox
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProjectsScreen(
+    onNavigateToTaskDetail: (java.util.UUID) -> Unit = {},
     viewModel: ProjectsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
 
-    if (state.selectedProject != null) {
+    val selected = state.selectedProject
+    if (selected != null) {
         ProjectDetailScreen(
-            project = state.selectedProject!!,
+            project = selected,
             onBack = { viewModel.onIntent(ProjectsIntent.ClearSelection) },
-            onUpdatePurpose = { viewModel.onIntent(ProjectsIntent.UpdatePurpose(state.selectedProject!!.id, it)) },
-            onUpdateOutcome = { viewModel.onIntent(ProjectsIntent.UpdateOutcome(state.selectedProject!!.id, it)) },
-            onUpdateBrainstorm = { viewModel.onIntent(ProjectsIntent.UpdateBrainstorm(state.selectedProject!!.id, it)) },
+            onUpdatePurpose = { viewModel.onIntent(ProjectsIntent.UpdatePurpose(selected.id, it)) },
+            onUpdateOutcome = { viewModel.onIntent(ProjectsIntent.UpdateOutcome(selected.id, it)) },
+            onUpdateBrainstorm = { viewModel.onIntent(ProjectsIntent.UpdateBrainstorm(selected.id, it)) },
+            onNavigateToTaskDetail = onNavigateToTaskDetail,
         )
         return
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("Projects") })
+    SyncPullRefreshBox(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(title = { Text("Projects") })
 
-        QuickCaptureBar(
-            value = state.inputText,
-            onValueChange = { viewModel.onIntent(ProjectsIntent.InputChanged(it)) },
-            onSubmit = { viewModel.onIntent(ProjectsIntent.Submit) },
-            placeholder = "New project...",
-        )
+            QuickCaptureBar(
+                value = state.inputText,
+                onValueChange = { viewModel.onIntent(ProjectsIntent.InputChanged(it)) },
+                onSubmit = { viewModel.onIntent(ProjectsIntent.Submit) },
+                placeholder = "New project...",
+            )
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(state.projects, key = { it.id }) { project ->
-                val (done, total) = project.completionRatio()
-                ListItem(
-                    headlineContent = { Text(project.name) },
-                    supportingContent = {
-                        Text("$done/$total tasks complete")
-                    },
-                    leadingContent = {
-                        if (project.isStuck()) {
-                            Icon(Icons.Filled.Warning, "Stuck", tint = MaterialTheme.colorScheme.error)
-                        }
-                    },
-                    trailingContent = {
-                        if (total > 0) {
-                            CircularProgressIndicator(
-                                progress = { done.toFloat() / total },
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 3.dp,
-                            )
-                        }
-                    },
-                    modifier = Modifier.clickable {
-                        viewModel.onIntent(ProjectsIntent.SelectProject(project))
-                    },
-                )
-                HorizontalDivider()
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(state.projects, key = { it.id }) { project ->
+                    val (done, total) = project.completionRatio()
+                    ListItem(
+                        headlineContent = { Text(project.name) },
+                        supportingContent = {
+                            Text("$done/$total tasks complete")
+                        },
+                        leadingContent = {
+                            if (project.isStuck()) {
+                                Icon(Icons.Filled.Warning, "Stuck", tint = MaterialTheme.colorScheme.error)
+                            }
+                        },
+                        trailingContent = {
+                            if (total > 0) {
+                                CircularProgressIndicator(
+                                    progress = { done.toFloat() / total },
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 3.dp,
+                                )
+                            }
+                        },
+                        modifier = Modifier.clickable {
+                            viewModel.onIntent(ProjectsIntent.SelectProject(project))
+                        },
+                    )
+                    HorizontalDivider()
+                }
             }
         }
     }
@@ -83,6 +89,7 @@ private fun ProjectDetailScreen(
     onUpdatePurpose: (String) -> Unit,
     onUpdateOutcome: (String) -> Unit,
     onUpdateBrainstorm: (String) -> Unit,
+    onNavigateToTaskDetail: (java.util.UUID) -> Unit = {},
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -133,7 +140,7 @@ private fun ProjectDetailScreen(
                 com.lamp.mobile.core.common.ui.TaskRow(
                     task = task,
                     onToggleDone = { /* handled by parent */ },
-                    onClick = { /* task detail */ },
+                    onClick = { onNavigateToTaskDetail(task.id) },
                     showProject = false,
                 )
             }

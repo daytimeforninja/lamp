@@ -58,7 +58,9 @@ enum class DrawerDestination(
     CONTACTS("contacts", "Contacts", Icons.Outlined.Contacts),
     MEDIA("media", "Media", Icons.Outlined.Movie),
     SHOPPING("shopping", "Shopping", Icons.Outlined.ShoppingCart),
+    AGENDA("agenda", "Agenda", Icons.Outlined.ViewAgenda),
     REVIEW("review", "Review", Icons.Outlined.RateReview),
+    ACCOUNTS("accounts", "Accounts", Icons.Outlined.AccountBalance),
     SETTINGS("settings", "Settings", Icons.Outlined.Settings),
     CONFLICTS("conflicts", "Conflicts", Icons.Outlined.SyncProblem),
 }

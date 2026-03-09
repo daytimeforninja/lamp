@@ -29,13 +29,19 @@ sealed class Recurrence {
     abstract val interval: RecurrenceInterval
 
     /** Standard (+Nd): next from original date */
-    data class Standard(override val interval: RecurrenceInterval) : Recurrence()
+    data class Standard(override val interval: RecurrenceInterval) : Recurrence() {
+        override fun toString(): String = toOrgString()
+    }
 
     /** Relative (.+Nd): next from completion date */
-    data class Relative(override val interval: RecurrenceInterval) : Recurrence()
+    data class Relative(override val interval: RecurrenceInterval) : Recurrence() {
+        override fun toString(): String = toOrgString()
+    }
 
     /** Strict (++Nd): skip to next future date */
-    data class Strict(override val interval: RecurrenceInterval) : Recurrence()
+    data class Strict(override val interval: RecurrenceInterval) : Recurrence() {
+        override fun toString(): String = toOrgString()
+    }
 
     fun nextDate(original: LocalDate, completed: LocalDate, today: LocalDate): LocalDate =
         when (this) {
@@ -50,7 +56,7 @@ sealed class Recurrence {
             }
         }
 
-    override fun toString(): String {
+    fun toOrgString(): String {
         val prefix = when (this) {
             is Standard -> "+"
             is Relative -> ".+"

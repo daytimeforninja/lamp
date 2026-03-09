@@ -64,8 +64,8 @@ class TaskRepositoryImpl @Inject constructor(
     override suspend fun getDirty(): List<Task> =
         taskDao.getDirty().map { it.toDomain() }
 
-    override suspend fun getDeleted(): List<Pair<String, String?>> =
-        taskDao.getDeleted().map { it.id to it.syncHref }
+    override suspend fun getDeleted(): List<Triple<String, String?, String?>> =
+        taskDao.getDeleted().map { Triple(it.id, it.syncHref, it.syncEtag) }
 
     override suspend fun markSynced(id: UUID, hash: Long, etag: String, href: String) =
         taskDao.markSynced(id.toString(), hash, etag, href)

@@ -1,6 +1,9 @@
 package com.lamp.mobile.core.network.caldav
 
 import com.lamp.mobile.core.model.CalendarInfo
+import android.util.Log
+import com.lamp.mobile.core.network.MethodPreservingRedirectInterceptor
+import com.lamp.mobile.core.network.upgradeToHttps
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.auth.*
@@ -28,29 +31,38 @@ enum class PutCondition {
 }
 
 class CalDavClient(
-    private val baseUrl: String,
+    baseUrl: String,
     private val username: String,
     private val password: String,
 ) {
+    private val baseUrl = baseUrl.upgradeToHttps()
     private val client = HttpClient(OkHttp) {
         install(Auth) {
             basic {
-                credentials { BasicAuthCredentials(username, password) }
+                credentials {
+                    BasicAuthCredentials(
+                        username = this@CalDavClient.username,
+                        password = this@CalDavClient.password,
+                    )
+                }
                 sendWithoutRequest { true }
             }
         }
         engine {
             config {
+                followRedirects(false)
                 connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                 readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             }
+            addInterceptor(MethodPreservingRedirectInterceptor())
         }
     }
 
     private fun resolveUrl(path: String): String {
-        if (path.startsWith("http://") || path.startsWith("https://")) return path
+        if (path.startsWith("https://")) return path
+        if (path.startsWith("http://")) return path.upgradeToHttps()
         val base = URL(baseUrl)
-        return "${base.protocol}://${base.authority}$path"
+        return "https://${base.authority}$path"
     }
 
     // --- Discovery ---
@@ -62,26 +74,70 @@ class CalDavClient(
     }
 
     private suspend fun findPrincipal(): String {
-        // Try .well-known first (RFC 6764)
-        val wellKnownBody = propfind("$baseUrl/.well-known/caldav", 0, PROPFIND_PRINCIPAL)
-        var principal = WebDavXmlParser.extractHref(wellKnownBody, "current-user-principal")
-        if (principal == null) {
-            val rootBody = propfind(baseUrl, 0, PROPFIND_PRINCIPAL)
-            principal = WebDavXmlParser.extractHref(rootBody, "current-user-principal")
+        val errors = mutableListOf<String>()
+
+        // Try .well-known first (RFC 6764) — redirects followed by interceptor
+        try {
+            val url = resolveUrl("/.well-known/caldav")
+            Log.d("CalDav", "PROPFIND principal at: $url")
+            val body = propfind(url, 0, PROPFIND_PRINCIPAL)
+            Log.d("CalDav", "PROPFIND principal response: ${body.take(500)}")
+            val principal = WebDavXmlParser.extractHref(body, "current-user-principal")
+            Log.d("CalDav", "Extracted principal: $principal")
+            if (principal != null) return principal
+        } catch (e: Exception) {
+            Log.w("CalDav", ".well-known failed: ${e.message}")
+            errors.add(".well-known/caldav: ${e.message}")
         }
-        // Fastmail fallback
-        return principal ?: "/dav/principals/user/$username/"
+
+        // Fallback to PROPFIND on base URL
+        try {
+            Log.d("CalDav", "PROPFIND principal at base: $baseUrl")
+            val body = propfind(baseUrl, 0, PROPFIND_PRINCIPAL)
+            Log.d("CalDav", "PROPFIND base response: ${body.take(500)}")
+            val principal = WebDavXmlParser.extractHref(body, "current-user-principal")
+            Log.d("CalDav", "Extracted principal from base: $principal")
+            if (principal != null) return principal
+        } catch (e: Exception) {
+            Log.w("CalDav", "base PROPFIND failed: ${e.message}")
+            errors.add("base URL: ${e.message}")
+        }
+
+        // Fastmail-style fallback
+        val fallback = "/dav/principals/user/$username/"
+        try {
+            Log.d("CalDav", "Trying Fastmail-style principal: $fallback")
+            val body = propfind(resolveUrl(fallback), 0, PROPFIND_PRINCIPAL)
+            val principal = WebDavXmlParser.extractHref(body, "current-user-principal")
+            if (principal != null) return principal
+            // Server responded with valid XML but no principal — try using the path directly
+            return fallback
+        } catch (e: Exception) {
+            Log.w("CalDav", "Fastmail fallback failed: ${e.message}")
+            errors.add("fallback: ${e.message}")
+        }
+
+        throw Exception("Could not find CalDAV principal. ${errors.joinToString("; ")}")
     }
 
     private suspend fun findCalendarHomeSet(principal: String): String {
-        val body = propfind(resolveUrl(principal), 0, PROPFIND_HOME_SET)
-        return WebDavXmlParser.extractHref(body, "calendar-home-set")
-            ?: throw Exception("No calendar-home-set found")
+        val url = resolveUrl(principal)
+        Log.d("CalDav", "PROPFIND calendar-home-set at: $url")
+        val body = propfind(url, 0, PROPFIND_HOME_SET)
+        Log.d("CalDav", "calendar-home-set response: ${body.take(500)}")
+        val homeSet = WebDavXmlParser.extractHref(body, "calendar-home-set")
+        Log.d("CalDav", "Extracted calendar-home-set: $homeSet")
+        return homeSet ?: throw Exception("No calendar-home-set found at $url")
     }
 
     private suspend fun listCalendars(homeSet: String): List<CalendarInfo> {
-        val body = propfind(resolveUrl(homeSet), 1, PROPFIND_CALENDARS)
-        return WebDavXmlParser.parseCalendarListing(body)
+        val url = resolveUrl(homeSet)
+        Log.d("CalDav", "PROPFIND calendars at: $url")
+        val body = propfind(url, 1, PROPFIND_CALENDARS)
+        Log.d("CalDav", "Calendar listing response: ${body.take(2000)}")
+        val result = WebDavXmlParser.parseCalendarListing(body)
+        Log.d("CalDav", "Parsed ${result.size} calendars: ${result.map { "${it.displayName} vtodo=${it.supportsVtodo} vevent=${it.supportsVevent}" }}")
+        return result
     }
 
     // --- CRUD ---
@@ -115,6 +171,9 @@ class CalDavClient(
             if (etag != null) {
                 header(HttpHeaders.IfMatch, "\"$etag\"")
             }
+        }
+        if (!response.status.isSuccess()) {
+            throw Exception("PUT failed: ${response.status}")
         }
         response.headers[HttpHeaders.ETag]?.trim('"') ?: ""
     }
@@ -161,6 +220,7 @@ class CalDavClient(
         }
 
         val xml = response.bodyAsText()
+        requireXml(xml, response.status)
         val newToken = WebDavXmlParser.extractSyncToken(xml)
 
         val changes = WebDavXmlParser.parseMultistatus(xml).map { resp ->
@@ -185,7 +245,12 @@ class CalDavClient(
             contentType(ContentType.Application.Xml)
             setBody(body)
         }
-        return response.bodyAsText()
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess() && response.status != HttpStatusCode.MultiStatus) {
+            throw Exception("PROPFIND $url failed: ${response.status} — ${text.take(200)}")
+        }
+        requireXml(text, response.status)
+        return text
     }
 
     private suspend fun report(url: String, body: String): String {
@@ -195,7 +260,12 @@ class CalDavClient(
             contentType(ContentType.Application.Xml)
             setBody(body)
         }
-        return response.bodyAsText()
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess() && response.status != HttpStatusCode.MultiStatus) {
+            throw Exception("REPORT $url failed: ${response.status} — ${text.take(200)}")
+        }
+        requireXml(text, response.status)
+        return text
     }
 
     private fun extractUid(ical: String): String? =
@@ -204,6 +274,20 @@ class CalDavClient(
     fun close() = client.close()
 
     companion object {
+        /** Throw if response body looks like HTML rather than XML. */
+        internal fun requireXml(body: String, status: HttpStatusCode) {
+            val trimmed = body.trimStart()
+            if (trimmed.startsWith("<html", ignoreCase = true) ||
+                trimmed.startsWith("<!doctype", ignoreCase = true) ||
+                (!trimmed.startsWith("<?xml") && !trimmed.startsWith("<") )) {
+                throw Exception("Server returned non-XML response ($status): ${body.take(200)}")
+            }
+            // Check for HTML tags that should never appear in WebDAV XML
+            if ("<body" in body.lowercase() || "<hr" in body.lowercase()) {
+                throw Exception("Server returned HTML instead of XML ($status): ${body.take(200)}")
+            }
+        }
+
         private val PROPFIND_PRINCIPAL = """<?xml version="1.0" encoding="utf-8"?>
             <d:propfind xmlns:d="DAV:">
                 <d:prop><d:current-user-principal/></d:prop>

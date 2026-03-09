@@ -6,7 +6,7 @@ enum class Priority(val orgString: String, val icalPriority: Int) {
     C("[#C]", 9);
 
     companion object {
-        fun fromOrg(s: String): Priority? = when (s.trim().uppercase().replace("[#", "").replace("]", "")) {
+        fun fromOrg(s: String): Priority? = when (s.trim().uppercase().replace("[#", "").replace("]", "").replace("#", "")) {
             "A" -> A
             "B" -> B
             "C" -> C

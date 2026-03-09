@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ContactDao {
-    @Query("SELECT * FROM contacts ORDER BY name ASC")
+    @Query("SELECT * FROM contacts WHERE syncDeleted = 0 ORDER BY name ASC")
     fun observeAll(): Flow<List<ContactEntity>>
 
     @Query("SELECT * FROM contacts WHERE id = :id")

@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lamp.mobile.core.common.ui.QuickCaptureBar
 import com.lamp.mobile.core.common.ui.StreakChart
+import com.lamp.mobile.core.common.ui.SyncPullRefreshBox
 import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -22,50 +23,60 @@ fun HabitsScreen(
 ) {
     val state by viewModel.state.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("Habits") })
+    SyncPullRefreshBox(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(title = { Text("Habits") })
 
-        QuickCaptureBar(
-            value = state.inputText,
-            onValueChange = { viewModel.onIntent(HabitsIntent.InputChanged(it)) },
-            onSubmit = { viewModel.onIntent(HabitsIntent.Submit) },
-            placeholder = "New habit...",
-        )
+            QuickCaptureBar(
+                value = state.inputText,
+                onValueChange = { viewModel.onIntent(HabitsIntent.InputChanged(it)) },
+                onSubmit = { viewModel.onIntent(HabitsIntent.Submit) },
+                placeholder = "New habit...",
+            )
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(state.habits, key = { it.task.id }) { habit ->
-                val isDue = habit.isDue(LocalDate.now())
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(habit.task.title, style = MaterialTheme.typography.bodyLarge)
-                            if (isDue) {
-                                FilledTonalButton(
-                                    onClick = { viewModel.onIntent(HabitsIntent.Complete(habit.task.id)) },
-                                ) {
-                                    Icon(Icons.Filled.Check, "Complete")
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Done")
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(state.habits, key = { it.task.id }) { habit ->
+                    val isDue = habit.isDue(LocalDate.now())
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(habit.task.title, style = MaterialTheme.typography.bodyLarge)
+                                    if (isDue) {
+                                        Spacer(Modifier.width(8.dp))
+                                        Badge(containerColor = MaterialTheme.colorScheme.primary) {
+                                            Text("Due")
+                                        }
+                                    }
                                 }
-                            } else {
-                                Text("Done today", style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary)
+                                if (isDue) {
+                                    FilledTonalButton(
+                                        onClick = { viewModel.onIntent(HabitsIntent.Complete(habit.task.id)) },
+                                    ) {
+                                        Icon(Icons.Filled.Check, "Complete")
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Done")
+                                    }
+                                } else {
+                                    Text("Done today", style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary)
+                                }
                             }
+                            Spacer(Modifier.height(8.dp))
+                            StreakChart(
+                                completions = habit.completions,
+                                streak = habit.streak,
+                                bestStreak = habit.bestStreak,
+                            )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        StreakChart(
-                            completions = habit.completions,
-                            streak = habit.streak,
-                            bestStreak = habit.bestStreak,
-                        )
                     }
                 }
             }

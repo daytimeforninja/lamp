@@ -121,18 +121,24 @@ class SyncEngine @Inject constructor(
                 val condition = if (task.syncHref == null) PutCondition.CREATE_ONLY else PutCondition.UNCONDITIONAL
                 val etag = if (task.syncEtag != null) task.syncEtag else null
 
-                val newEtag = client.putVtodo(href, condition, etag, ical).getOrNull()
-                    ?: continue // Skip on conflict, will resolve on next pull
+                val putResult = client.putVtodo(href, condition, etag, ical)
                 val hash = VtodoConverter.taskContentHash(task)
-                taskRepo.markSynced(task.id, hash, newEtag, href)
-                uploaded++
+                val newEtag = putResult.getOrNull()
+                if (newEtag != null) {
+                    taskRepo.markSynced(task.id, hash, newEtag, href)
+                    uploaded++
+                } else {
+                    Log.w("LampSync", "PUT failed for ${task.title}, clearing dirty flag")
+                    // Clear dirty flag to prevent infinite retry; next pull will reconcile
+                    taskRepo.markSynced(task.id, hash, etag ?: "", href)
+                }
             }
 
             // Push deletes
             val deletedTasks = taskRepo.getDeleted()
-            for ((id, syncHref) in deletedTasks) {
-                if (syncHref != null) {
-                    client.deleteVtodo(syncHref, "").getOrNull()
+            for ((id, syncHref, syncEtag) in deletedTasks) {
+                if (syncHref != null && syncEtag != null) {
+                    client.deleteVtodo(syncHref, syncEtag).getOrNull()
                 }
                 // Actually delete locally after remote delete
                 taskRepo.delete(java.util.UUID.fromString(id))
@@ -234,13 +240,24 @@ class SyncEngine @Inject constructor(
 
     private suspend fun reconstructHabits() {
         val allTasks = taskRepo.getAll()
-        val recurring = allTasks.filter { it.recurrence != null }
-        Log.d("LampSync", "reconstructHabits: ${allTasks.size} tasks, ${recurring.size} with recurrence")
-        for (task in recurring) {
+        // Identify habits: has recurrence OR has logbook entries (completion history)
+        val habitTasks = allTasks.filter {
+            it.recurrence != null || it.logbookEntries.isNotEmpty()
+        }
+        Log.d("LampSync", "reconstructHabits: ${allTasks.size} tasks, ${habitTasks.size} habits")
+        for (task in habitTasks) {
             val existing = habitRepo.getByTaskId(task.id)
             if (existing == null) {
-                Log.d("LampSync", "Creating habit for: ${task.title} (recurrence=${task.recurrence})")
-                habitRepo.saveHabitOnly(Habit(task = task))
+                Log.d("LampSync", "Creating habit for: ${task.title}")
+                val habit = Habit(task = task, completions = task.logbookEntries)
+                    .recalculateStreak(java.time.LocalDate.now())
+                habitRepo.saveHabitOnly(habit)
+            } else if (task.logbookEntries.isNotEmpty() && existing.completions != task.logbookEntries) {
+                // Update completions from synced logbook entries
+                Log.d("LampSync", "Updating habit completions for: ${task.title}")
+                val updated = existing.copy(task = task, completions = task.logbookEntries)
+                    .recalculateStreak(java.time.LocalDate.now())
+                habitRepo.saveHabitOnly(updated)
             }
         }
     }
@@ -257,14 +274,15 @@ class SyncEngine @Inject constructor(
 
             for (calendar in calendars.filter { it.supportsVevent }) {
                 val vevents = client.listVevents(calendar.href).getOrThrow()
-                for (vtodo in vevents) {
+                for (vevent in vevents) {
                     val event = VeventConverter.vcalendarToEvent(
-                        vtodo.icalBody, calendar.href, calendar.displayName
+                        vevent.icalBody, calendar.href, calendar.displayName
                     ) ?: continue
                     calendarEventRepo.save(event.copy(
-                        syncHref = vtodo.href,
+                        syncHref = vevent.href,
                         syncHash = event.syncHash,
-                    ))
+                        syncEtag = vevent.etag,
+                    ), markDirty = false)
                     downloaded++
                 }
             }
@@ -312,7 +330,8 @@ class SyncEngine @Inject constructor(
             val deletedContacts = contactRepo.getDeleted()
             for (contact in deletedContacts) {
                 if (contact.syncHref != null) {
-                    client.deleteContact(contact.syncHref!!).getOrNull()
+                    val deleted = client.deleteContact(contact.syncHref!!).isSuccess
+                    if (!deleted) continue // Keep locally until remote delete succeeds
                 }
                 contactRepo.delete(contact.id)
                 synced++

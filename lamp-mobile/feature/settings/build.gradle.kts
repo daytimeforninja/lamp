@@ -31,7 +31,9 @@ android {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:data"))
+    implementation(project(":core:network"))
     implementation(project(":core:common"))
+    implementation(project(":sync"))
 
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)

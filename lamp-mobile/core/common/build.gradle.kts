@@ -27,9 +27,15 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:model"))
+
     implementation(libs.coroutines.core)
     implementation(libs.lifecycle.viewmodel)
     implementation(libs.compose.runtime)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons)
+    implementation(platform(libs.compose.bom))
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

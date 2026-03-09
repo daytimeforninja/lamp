@@ -29,11 +29,11 @@ class CalendarEventRepositoryImpl @Inject constructor(
     override suspend fun getById(id: UUID): CalendarEvent? =
         calendarEventDao.getById(id.toString())?.toDomain()
 
-    override suspend fun save(event: CalendarEvent) =
-        calendarEventDao.upsert(event.toEntity())
+    override suspend fun save(event: CalendarEvent, markDirty: Boolean) =
+        calendarEventDao.upsert(event.toEntity(syncDirty = markDirty))
 
-    override suspend fun saveAll(events: List<CalendarEvent>) =
-        calendarEventDao.upsertAll(events.map { it.toEntity() })
+    override suspend fun saveAll(events: List<CalendarEvent>, markDirty: Boolean) =
+        calendarEventDao.upsertAll(events.map { it.toEntity(syncDirty = markDirty) })
 
     override suspend fun delete(id: UUID) =
         calendarEventDao.deleteById(id.toString())
@@ -43,4 +43,7 @@ class CalendarEventRepositoryImpl @Inject constructor(
 
     override suspend fun getByHref(href: String): CalendarEvent? =
         calendarEventDao.getByHref(href)?.toDomain()
+
+    override suspend fun markSynced(id: UUID, hash: Long, etag: String, href: String) =
+        calendarEventDao.markSynced(id.toString(), hash, etag, href)
 }

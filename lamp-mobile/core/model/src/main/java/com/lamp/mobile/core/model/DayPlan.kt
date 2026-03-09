@@ -23,11 +23,14 @@ data class DayPlan(
 
     fun remainingBudget(): Int = (spoonBudget - spentSpoons).coerceAtLeast(0)
 
-    fun completeTask(taskId: UUID, title: String, esc: Int?): DayPlan = copy(
-        confirmedTaskIds = confirmedTaskIds - taskId,
-        completedTasks = completedTasks + CompletedTask(taskId, title, esc),
-        spentSpoons = spentSpoons + (esc ?: 0),
-    )
+    fun completeTask(taskId: UUID, title: String, esc: Int?): DayPlan {
+        if (completedTasks.any { it.id == taskId }) return this
+        return copy(
+            confirmedTaskIds = confirmedTaskIds - taskId,
+            completedTasks = completedTasks + CompletedTask(taskId, title, esc),
+            spentSpoons = spentSpoons + (esc ?: 0),
+        )
+    }
 
     fun uncompleteTask(taskId: UUID): DayPlan {
         val task = completedTasks.find { it.id == taskId } ?: return this

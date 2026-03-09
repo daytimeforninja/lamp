@@ -17,4 +17,8 @@ data class CalendarEventEntity(
     val calendarName: String,
     val syncHref: String?,
     val syncHash: Long?,
+    val syncEtag: String? = null,
+    val syncDirty: Boolean = false,
+    val syncDeleted: Boolean = false,
+    val syncUid: String? = null,
 )

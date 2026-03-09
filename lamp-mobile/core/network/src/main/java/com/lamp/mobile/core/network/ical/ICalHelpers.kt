@@ -5,8 +5,32 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 
 object ICalHelpers {
+    // UUID v5 namespace for converting non-UUID CalDAV UIDs (RFC 4122 DNS namespace)
+    val CALDAV_UUID_NAMESPACE: UUID = UUID.fromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+
+    /**
+     * UUID v5 (name-based SHA-1) using a given namespace.
+     * Matches Rust's Uuid::new_v5 behavior.
+     */
+    fun uuidV5(namespace: UUID, name: String): UUID {
+        val nsBytes = java.nio.ByteBuffer.allocate(16).let { buf ->
+            buf.putLong(namespace.mostSignificantBits)
+            buf.putLong(namespace.leastSignificantBits)
+            buf.array()
+        }
+        val nameBytes = name.toByteArray(Charsets.UTF_8)
+        val data = nsBytes + nameBytes
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        val hash = md.digest(data)
+        hash[6] = ((hash[6].toInt() and 0x0F) or 0x50).toByte() // version 5
+        hash[8] = ((hash[8].toInt() and 0x3F) or 0x80).toByte() // variant
+        val resultBuf = java.nio.ByteBuffer.wrap(hash)
+        return UUID(resultBuf.getLong(), resultBuf.getLong())
+    }
+
     fun formatDate(date: LocalDate): String =
         date.format(DateTimeFormatter.BASIC_ISO_DATE) // YYYYMMDD
 
@@ -16,7 +40,7 @@ object ICalHelpers {
     }
 
     fun parseIcalDate(s: String): LocalDate? = try {
-        LocalDate.parse(s.take(8), DateTimeFormatter.BASIC_ISO_DATE)
+        LocalDate.parse(s.trim().take(8), DateTimeFormatter.BASIC_ISO_DATE)
     } catch (_: Exception) { null }
 
     fun parseIcalDatetime(s: String): LocalDateTime? = try {
@@ -41,10 +65,11 @@ object ICalHelpers {
         .replace("\n", "\\n")
 
     fun unescapeText(s: String): String = s
+        .replace("\\\\", "\u0000")
         .replace("\\n", "\n")
         .replace("\\,", ",")
         .replace("\\;", ";")
-        .replace("\\\\", "\\")
+        .replace("\u0000", "\\")
 
     fun parseIcalLine(line: String): Pair<String, String>? {
         val colonIdx = line.indexOf(':')

@@ -15,11 +15,13 @@ data class NextActionsUiState(
     val tasks: List<Task> = emptyList(),
     val selectedContexts: Set<String> = emptySet(),
     val allContexts: Set<String> = emptySet(),
+    val searchQuery: String = "",
 )
 
 sealed class NextActionsIntent {
     data class ToggleContext(val context: String) : NextActionsIntent()
     data class ToggleDone(val taskId: UUID) : NextActionsIntent()
+    data class SearchQueryChanged(val query: String) : NextActionsIntent()
 }
 
 @HiltViewModel
@@ -55,6 +57,7 @@ class NextActionsViewModel @Inject constructor(
                     taskRepo.save(task.complete())
                 }
             }
+            is NextActionsIntent.SearchQueryChanged -> updateState { copy(searchQuery = intent.query) }
         }
     }
 }

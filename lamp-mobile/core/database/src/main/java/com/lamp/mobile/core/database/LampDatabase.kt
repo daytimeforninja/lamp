@@ -18,7 +18,7 @@ import com.lamp.mobile.core.database.entity.*
         SyncMetadataEntity::class,
         AccountEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class LampDatabase : RoomDatabase() {

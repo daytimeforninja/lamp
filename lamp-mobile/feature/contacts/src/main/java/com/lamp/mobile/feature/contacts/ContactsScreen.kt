@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lamp.mobile.core.common.ui.QuickCaptureBar
+import com.lamp.mobile.core.common.ui.SyncPullRefreshBox
 import com.lamp.mobile.core.model.ContactCategory
 import java.time.format.DateTimeFormatter
 
@@ -47,11 +48,13 @@ fun ContactsScreen(
         )
     }
 
+    SyncPullRefreshBox(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("Contacts") })
 
         // Edit form
-        if (state.editingId != null) {
+        val editingId = state.editingId
+        if (editingId != null) {
             ContactEditForm(
                 form = state.editForm,
                 onFieldChange = { field, value ->
@@ -59,7 +62,7 @@ fun ContactsScreen(
                 },
                 onSave = { viewModel.onIntent(ContactsIntent.SaveEdit) },
                 onCancel = { viewModel.onIntent(ContactsIntent.CancelEdit) },
-                onDelete = { viewModel.onIntent(ContactsIntent.Delete(state.editingId!!)) },
+                onDelete = { viewModel.onIntent(ContactsIntent.Delete(editingId)) },
             )
         } else {
             QuickCaptureBar(
@@ -105,6 +108,7 @@ fun ContactsScreen(
                 }
             }
         }
+    }
     }
 }
 

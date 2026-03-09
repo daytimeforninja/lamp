@@ -20,9 +20,12 @@ class SyncWorker @AssistedInject constructor(
         return try {
             Log.d(TAG, "Starting sync...")
             val result = syncEngine.syncAll()
-            Log.d(TAG, "Sync complete: ${result.tasksUploaded} up, ${result.tasksDownloaded} down, ${result.errors.size} errors")
+            Log.d(TAG, "Sync complete: ${result.tasksUploaded} up, ${result.tasksDownloaded} down, ${result.conflicts.size} conflicts, ${result.errors.size} errors")
             if (result.errors.isNotEmpty()) {
                 Log.w(TAG, "Sync errors: ${result.errors.joinToString("; ")}")
+            }
+            if (result.conflicts.isNotEmpty()) {
+                Log.w(TAG, "Sync conflicts: ${result.conflicts.size}")
             }
             Result.success(workDataOf(
                 "tasks_uploaded" to result.tasksUploaded,
@@ -30,6 +33,7 @@ class SyncWorker @AssistedInject constructor(
                 "events_downloaded" to result.eventsDownloaded,
                 "contacts_synced" to result.contactsSynced,
                 "notes_synced" to result.notesSynced,
+                "conflict_count" to result.conflicts.size,
                 "error_count" to result.errors.size,
             ))
         } catch (e: Exception) {
