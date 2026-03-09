@@ -161,8 +161,15 @@ impl SyncEngine {
                                 let mut pulled = remote_task;
                                 pulled.sync_href = Some(remote_vtodo.href.clone());
                                 pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                                pulled.sync_hash = Some(task_content_hash(&pulled));
                                 pulled.project = local_task.project.clone();
+                                // Preserve local-only fields not yet on remote
+                                if pulled.extra_tags.is_empty() {
+                                    pulled.extra_tags = local_task.extra_tags.clone();
+                                }
+                                if pulled.logbook_entries.is_empty() {
+                                    pulled.logbook_entries = local_task.logbook_entries.clone();
+                                }
+                                pulled.sync_hash = Some(task_content_hash(&pulled));
                                 result.pulled.push(pulled);
                             }
                         }
@@ -179,8 +186,15 @@ impl SyncEngine {
                             let mut pulled = remote_task;
                             pulled.sync_href = Some(remote_vtodo.href.clone());
                             pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             pulled.project = local_task.project.clone();
+                            // Preserve local-only fields not yet on remote
+                            if pulled.extra_tags.is_empty() {
+                                pulled.extra_tags = local_task.extra_tags.clone();
+                            }
+                            if pulled.logbook_entries.is_empty() {
+                                pulled.logbook_entries = local_task.logbook_entries.clone();
+                            }
+                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             log::info!("Merged (remote wins): {}", pulled.title);
                             result.pulled.push(pulled);
                             result.merged += 1;
@@ -188,8 +202,15 @@ impl SyncEngine {
                             let mut pulled = remote_task;
                             pulled.sync_href = Some(remote_vtodo.href.clone());
                             pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             pulled.project = local_task.project.clone();
+                            // Preserve local-only fields not yet on remote
+                            if pulled.extra_tags.is_empty() {
+                                pulled.extra_tags = local_task.extra_tags.clone();
+                            }
+                            if pulled.logbook_entries.is_empty() {
+                                pulled.logbook_entries = local_task.logbook_entries.clone();
+                            }
+                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             result.pulled.push(pulled);
                         }
                     } else {
