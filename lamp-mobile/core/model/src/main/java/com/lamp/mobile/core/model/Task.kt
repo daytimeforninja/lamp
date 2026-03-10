@@ -25,6 +25,7 @@ data class Task(
     val scheduledTime: String? = null,
     val deadlineTime: String? = null,
     val logbookEntries: List<LocalDateTime> = emptyList(),
+    val dayplanDate: LocalDate? = null,
     val syncHref: String? = null,
     val syncHash: Long? = null,
     val syncUid: String? = null,

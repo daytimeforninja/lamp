@@ -9,7 +9,7 @@ pub mod vevent;
 pub mod vtodo;
 pub mod webdav;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::core::event::CalendarEvent;
@@ -17,6 +17,36 @@ use crate::core::task::Task;
 use caldav::{CalDavClient, PutCondition, SyncChange};
 use vevent::{event_content_hash, event_to_vcalendar, vcalendar_to_events};
 use vtodo::{task_content_hash, task_to_vcalendar, vcalendar_to_task};
+
+/// Merge local-only fields into a pulled remote task.
+/// Logbook entries are unioned (both sides may have completions).
+/// Extra tags are preserved from local if remote has none.
+fn merge_local_fields(pulled: &mut Task, local: &Task) {
+    if pulled.extra_tags.is_empty() {
+        pulled.extra_tags = local.extra_tags.clone();
+    }
+    // Union logbook entries from both sides (e.g. phone and desktop completions)
+    if !local.logbook_entries.is_empty() {
+        let mut combined: HashSet<_> = pulled.logbook_entries.drain(..).collect();
+        combined.extend(local.logbook_entries.iter().copied());
+        pulled.logbook_entries = combined.into_iter().collect();
+        pulled.logbook_entries.sort();
+    }
+}
+
+/// Build a pulled task from a remote VTODO, setting sync metadata and
+/// merging local-only fields when a local copy exists.
+fn apply_remote_task(remote: Task, href: &str, etag: &str, local: Option<&Task>) -> Task {
+    let mut pulled = remote;
+    pulled.sync_href = Some(href.to_string());
+    pulled.sync_etag = Some(etag.to_string());
+    if let Some(local) = local {
+        pulled.project = local.project.clone();
+        merge_local_fields(&mut pulled, local);
+    }
+    pulled.sync_hash = Some(task_content_hash(&pulled));
+    pulled
+}
 
 /// A conflict detected during sync that needs user resolution.
 #[derive(Debug, Clone)]
@@ -158,18 +188,7 @@ impl SyncEngine {
                         if let Some(&local_task) = local_by_id.get(&remote_task.id) {
                             if !local_task.state.is_done() {
                                 log::info!("Remote task completed: {}", remote_task.title);
-                                let mut pulled = remote_task;
-                                pulled.sync_href = Some(remote_vtodo.href.clone());
-                                pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                                pulled.project = local_task.project.clone();
-                                // Preserve local-only fields not yet on remote
-                                if pulled.extra_tags.is_empty() {
-                                    pulled.extra_tags = local_task.extra_tags.clone();
-                                }
-                                if pulled.logbook_entries.is_empty() {
-                                    pulled.logbook_entries = local_task.logbook_entries.clone();
-                                }
-                                pulled.sync_hash = Some(task_content_hash(&pulled));
+                                let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, Some(local_task));
                                 result.pulled.push(pulled);
                             }
                         }
@@ -182,43 +201,17 @@ impl SyncEngine {
                             .sync_hash
                             .is_some_and(|h| h != local_hash);
 
+                        let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, Some(local_task));
                         if local_changed {
-                            let mut pulled = remote_task;
-                            pulled.sync_href = Some(remote_vtodo.href.clone());
-                            pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                            pulled.project = local_task.project.clone();
-                            // Preserve local-only fields not yet on remote
-                            if pulled.extra_tags.is_empty() {
-                                pulled.extra_tags = local_task.extra_tags.clone();
-                            }
-                            if pulled.logbook_entries.is_empty() {
-                                pulled.logbook_entries = local_task.logbook_entries.clone();
-                            }
-                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             log::info!("Merged (remote wins): {}", pulled.title);
                             result.pulled.push(pulled);
                             result.merged += 1;
                         } else {
-                            let mut pulled = remote_task;
-                            pulled.sync_href = Some(remote_vtodo.href.clone());
-                            pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                            pulled.project = local_task.project.clone();
-                            // Preserve local-only fields not yet on remote
-                            if pulled.extra_tags.is_empty() {
-                                pulled.extra_tags = local_task.extra_tags.clone();
-                            }
-                            if pulled.logbook_entries.is_empty() {
-                                pulled.logbook_entries = local_task.logbook_entries.clone();
-                            }
-                            pulled.sync_hash = Some(task_content_hash(&pulled));
                             result.pulled.push(pulled);
                         }
                     } else {
                         log::info!("Importing new remote task: {}", remote_task.title);
-                        let mut pulled = remote_task;
-                        pulled.sync_href = Some(remote_vtodo.href.clone());
-                        pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                        pulled.sync_hash = Some(task_content_hash(&pulled));
+                        let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, None);
                         result.pulled.push(pulled);
                     }
                 }
@@ -226,8 +219,23 @@ impl SyncEngine {
                     seen_hrefs.insert(href.clone());
                     for task in tasks {
                         if task.sync_href.as_deref() == Some(href.as_str()) {
-                            log::info!("Remote deleted: {}", task.title);
-                            result.deleted_local.push(task.id);
+                            let local_hash = task_content_hash(task);
+                            let locally_modified = task
+                                .sync_hash
+                                .is_some_and(|h| h != local_hash);
+                            if locally_modified {
+                                // Local was edited since last sync — keep local version,
+                                // detach from remote so it won't be re-deleted
+                                log::info!("Remote deleted but locally modified, keeping: {}", task.title);
+                                let mut kept = task.clone();
+                                kept.sync_href = None;
+                                kept.sync_etag = None;
+                                kept.sync_hash = None;
+                                result.pulled.push(kept);
+                            } else {
+                                log::info!("Remote deleted: {}", task.title);
+                                result.deleted_local.push(task.id);
+                            }
                         }
                     }
                 }
@@ -281,11 +289,7 @@ impl SyncEngine {
                 if let Some(&local_task) = local_by_id.get(&remote_task.id) {
                     if !local_task.state.is_done() {
                         log::info!("Remote task completed: {}", remote_task.title);
-                        let mut pulled = remote_task;
-                        pulled.sync_href = Some(remote_vtodo.href.clone());
-                        pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                        pulled.sync_hash = Some(task_content_hash(&pulled));
-                        pulled.project = local_task.project.clone();
+                        let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, Some(local_task));
                         result.pulled.push(pulled);
                     }
                 }
@@ -299,19 +303,12 @@ impl SyncEngine {
                 let remote_hash = task_content_hash(&remote_task);
 
                 if local_task.sync_hash.is_none() || local_hash != remote_hash {
-                    let mut pulled = remote_task;
-                    pulled.sync_href = Some(remote_vtodo.href.clone());
-                    pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                    pulled.sync_hash = Some(task_content_hash(&pulled));
-                    pulled.project = local_task.project.clone();
+                    let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, Some(local_task));
                     result.pulled.push(pulled);
                 }
             } else {
                 log::info!("Importing new remote task: {}", remote_task.title);
-                let mut pulled = remote_task;
-                pulled.sync_href = Some(remote_vtodo.href.clone());
-                pulled.sync_etag = Some(remote_vtodo.etag.clone());
-                pulled.sync_hash = Some(task_content_hash(&pulled));
+                let pulled = apply_remote_task(remote_task, &remote_vtodo.href, &remote_vtodo.etag, None);
                 result.pulled.push(pulled);
             }
         }
@@ -332,10 +329,13 @@ impl SyncEngine {
                 };
                 log::info!("Pushing to remote: {} -> {}", task.title, href);
                 match self.client.put_vtodo(&href, condition, &ical).await {
-                    Ok(_) => {
+                    Ok(new_etag) => {
                         let mut updated = task.clone();
                         updated.sync_href = Some(href);
                         updated.sync_hash = Some(task_content_hash(task));
+                        if !new_etag.is_empty() {
+                            updated.sync_etag = Some(new_etag);
+                        }
                         result.pulled.push(updated);
                         result.pushed += 1;
                     }
@@ -408,9 +408,10 @@ impl SyncEngine {
                     for mut remote_event in remote_instances {
                         remote_event.calendar_href = cal_href.clone();
                         if remote_event.sync_href.is_none() {
-                            // This is an expanded recurrence instance — no sync_href
+                            // This is an expanded recurrence instance — no sync_href/etag
                         } else {
                             remote_event.sync_href = Some(remote.href.clone());
+                            remote_event.sync_etag = Some(remote.etag.clone());
                         }
                         remote_event.sync_hash = Some(event_content_hash(&remote_event));
 
@@ -429,9 +430,26 @@ impl SyncEngine {
                     }
                 }
 
+                // Detect events deleted on remote: local events with a sync_href
+                // in this calendar that weren't found in the remote listing.
+                for local_event in &local_for_cal {
+                    if matched_local.contains(&local_event.id) {
+                        continue;
+                    }
+                    if local_event.sync_href.is_some() && local_event.sync_hash.is_some() {
+                        // Previously synced but gone from remote → deleted
+                        log::info!("Remote deleted event: {}", local_event.title);
+                        result.deleted_events.push(local_event.id);
+                        continue;
+                    }
+                }
+
                 // Push local events that aren't on remote
                 for local_event in &local_for_cal {
                     if matched_local.contains(&local_event.id) {
+                        continue;
+                    }
+                    if result.deleted_events.contains(&local_event.id) {
                         continue;
                     }
                     let local_hash = event_content_hash(local_event);
@@ -442,11 +460,18 @@ impl SyncEngine {
                             caldav::vevent_href(cal_href, &local_event.id)
                         });
                         let ical = event_to_vcalendar(local_event);
-                        match self.client.put_vtodo(&href, PutCondition::Unconditional, &ical).await {
-                            Ok(_) => {
+                        let condition = match local_event.sync_etag.as_deref() {
+                            Some(etag) if !etag.is_empty() => PutCondition::UpdateEtag(etag),
+                            _ => PutCondition::Unconditional,
+                        };
+                        match self.client.put_vtodo(&href, condition, &ical).await {
+                            Ok(new_etag) => {
                                 let mut updated = (*local_event).clone();
                                 updated.sync_href = Some(href);
                                 updated.sync_hash = Some(local_hash);
+                                if !new_etag.is_empty() {
+                                    updated.sync_etag = Some(new_etag);
+                                }
                                 result.pulled_events.push(updated);
                                 result.pushed_events += 1;
                             }
@@ -515,9 +540,12 @@ impl SyncEngine {
                         };
                         log::info!("Pushing update: {}", task.title);
                         match self.client.put_vtodo(href, condition, &ical).await {
-                            Ok(_) => {
+                            Ok(new_etag) => {
                                 let mut updated = task.clone();
                                 updated.sync_hash = Some(local_hash);
+                                if !new_etag.is_empty() {
+                                    updated.sync_etag = Some(new_etag);
+                                }
                                 result.pulled.push(updated);
                                 result.pushed += 1;
                             }
@@ -534,20 +562,26 @@ impl SyncEngine {
                 let ical = task_to_vcalendar(task);
                 log::info!("Creating remote: {} -> {}", task.title, href);
                 match self.client.put_vtodo(&href, PutCondition::CreateOnly, &ical).await {
-                    Ok(_) => {
+                    Ok(new_etag) => {
                         let mut updated = task.clone();
                         updated.sync_href = Some(href);
                         updated.sync_hash = Some(task_content_hash(task));
+                        if !new_etag.is_empty() {
+                            updated.sync_etag = Some(new_etag);
+                        }
                         result.pulled.push(updated);
                         result.pushed += 1;
                     }
                     Err(ref e) if e.contains("412") || e.contains("403") => {
                         log::info!("Already exists, updating: {}", task.title);
                         match self.client.put_vtodo(&href, PutCondition::Unconditional, &ical).await {
-                            Ok(_) => {
+                            Ok(new_etag) => {
                                 let mut updated = task.clone();
                                 updated.sync_href = Some(href);
                                 updated.sync_hash = Some(task_content_hash(task));
+                                if !new_etag.is_empty() {
+                                    updated.sync_etag = Some(new_etag);
+                                }
                                 result.pulled.push(updated);
                                 result.pushed += 1;
                             }

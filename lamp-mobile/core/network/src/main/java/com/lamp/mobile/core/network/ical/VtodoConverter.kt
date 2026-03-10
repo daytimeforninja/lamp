@@ -98,6 +98,9 @@ object VtodoConverter {
         // X-LAMP-RECURRENCE
         task.recurrence?.let { lines.add("X-LAMP-RECURRENCE:$it") }
 
+        // X-LAMP-DAYPLAN
+        task.dayplanDate?.let { lines.add("X-LAMP-DAYPLAN:${ICalHelpers.formatDate(it)}") }
+
         // X-LAMP-TAGS (non-context tags like "habit")
         if (task.extraTags.isNotEmpty()) {
             lines.add(ICalHelpers.foldLine("X-LAMP-TAGS:${task.extraTags.joinToString(",") { ICalHelpers.escapeText(it) }}"))
@@ -139,6 +142,7 @@ object VtodoConverter {
         var lampRecurrence: String? = null
         var lampLogbook: String? = null
         var lampTags: String? = null
+        var lampDayplan: LocalDate? = null
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -169,6 +173,7 @@ object VtodoConverter {
                 "X-LAMP-RECURRENCE" -> lampRecurrence = value
                 "X-LAMP-LOGBOOK" -> lampLogbook = value
                 "X-LAMP-TAGS" -> lampTags = value
+                "X-LAMP-DAYPLAN" -> lampDayplan = ICalHelpers.parseIcalDate(value)
             }
         }
 
@@ -222,6 +227,7 @@ object VtodoConverter {
                 ?.split(",")
                 ?.mapNotNull { ICalHelpers.parseIcalDatetime(it.trim()) }
                 ?: emptyList(),
+            dayplanDate = lampDayplan,
             syncUid = uid,
         )
     }

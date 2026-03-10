@@ -9,10 +9,13 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0 ORDER BY created DESC")
     fun observeAll(): Flow<List<TaskEntity>>
 
+    @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND extraTags NOT LIKE '%habit%' AND recurrence IS NULL ORDER BY created DESC")
+    fun observeNonHabit(): Flow<List<TaskEntity>>
+
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND state = :state ORDER BY created DESC")
     fun observeByState(state: String): Flow<List<TaskEntity>>
 
-    @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND location = 'inbox' ORDER BY created DESC")
+    @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND location = 'inbox' AND extraTags NOT LIKE '%habit%' AND recurrence IS NULL ORDER BY created DESC")
     fun observeInbox(): Flow<List<TaskEntity>>
 
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND state = 'NEXT' ORDER BY created DESC")

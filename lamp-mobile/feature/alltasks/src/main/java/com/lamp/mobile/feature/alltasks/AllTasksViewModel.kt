@@ -32,7 +32,7 @@ class AllTasksViewModel @Inject constructor(
 ) : MviViewModel<AllTasksUiState, AllTasksIntent, Nothing>(AllTasksUiState()) {
 
     init {
-        taskRepo.observeAll()
+        taskRepo.observeNonHabit()
             .onEach { tasks -> updateState { copy(tasks = tasks) } }
             .launchIn(viewModelScope)
     }

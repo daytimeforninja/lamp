@@ -524,6 +524,12 @@ pub fn save_contacts(path: &Path, contacts: &[Contact]) -> Result<(), String> {
 /// Merge remote (CardDAV) contacts into local contacts list.
 /// Matches by name. Preserves local-only fields like `last_contacted`.
 pub fn merge_contacts(local: &mut Vec<Contact>, remote: Vec<Contact>) {
+    // Collect remote hrefs before iterating so we can detect remote deletions after.
+    let remote_hrefs: std::collections::HashSet<String> = remote
+        .iter()
+        .filter_map(|c| c.sync_href.clone())
+        .collect();
+
     for rc in remote {
         // Match by sync_href first (stable identity), then by name as fallback
         let pos = rc.sync_href.as_ref().and_then(|href| {
@@ -546,6 +552,12 @@ pub fn merge_contacts(local: &mut Vec<Contact>, remote: Vec<Contact>) {
             local.push(rc);
         }
     }
+    // Remove contacts deleted on remote: local contacts with a sync_href
+    // that doesn't appear in the remote list were deleted on the server.
+    local.retain(|c| {
+        c.sync_href.as_ref().is_none_or(|href| remote_hrefs.contains(href))
+    });
+
     local.sort_by(|a, b| a.name.cmp(&b.name));
 }
 

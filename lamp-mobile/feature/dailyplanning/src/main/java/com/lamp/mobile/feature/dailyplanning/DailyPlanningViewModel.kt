@@ -90,10 +90,20 @@ class DailyPlanningViewModel @Inject constructor(
             is DailyPlanningIntent.ConfirmTask -> {
                 val plan = freshPlan()
                 dayPlanRepo.save(plan.copy(confirmedTaskIds = plan.confirmedTaskIds + intent.taskId))
+                // Stamp dayplanDate on the task so it syncs via CalDAV
+                val task = taskRepo.getById(intent.taskId)
+                if (task != null) {
+                    taskRepo.save(task.copy(dayplanDate = LocalDate.now()))
+                }
             }
             is DailyPlanningIntent.UnconfirmTask -> {
                 val plan = freshPlan()
                 dayPlanRepo.save(plan.copy(confirmedTaskIds = plan.confirmedTaskIds - intent.taskId))
+                // Clear dayplanDate so removal syncs via CalDAV
+                val task = taskRepo.getById(intent.taskId)
+                if (task != null) {
+                    taskRepo.save(task.copy(dayplanDate = null))
+                }
             }
             is DailyPlanningIntent.RejectSuggestion -> {
                 updateState { copy(rejectedIds = rejectedIds + intent.taskId) }

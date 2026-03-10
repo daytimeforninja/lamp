@@ -298,6 +298,7 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         scheduled_time: heading.scheduled_time.clone(),
         deadline_time: heading.deadline_time.clone(),
         logbook_entries: heading.logbook_entries.clone(),
+        dayplan_date: None,
         sync_href,
         sync_hash,
         sync_uid,

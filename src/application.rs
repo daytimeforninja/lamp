@@ -398,6 +398,20 @@ impl Application for Lamp {
             month_calendar: MonthCalendarState::default(),
             sync_ops_pending: 0,
         };
+        // Purge habit tasks from task lists — habits are the authoritative
+        // store, so duplicates in inbox/next/etc are stale.
+        let habit_ids: std::collections::HashSet<uuid::Uuid> =
+            app.habits.iter().map(|h| h.task.id).collect();
+        if !habit_ids.is_empty() {
+            app.inbox_tasks.retain(|t| !habit_ids.contains(&t.id));
+            app.next_tasks.retain(|t| !habit_ids.contains(&t.id));
+            app.waiting_tasks.retain(|t| !habit_ids.contains(&t.id));
+            app.someday_tasks.retain(|t| !habit_ids.contains(&t.id));
+            for project in &mut app.projects {
+                project.tasks.retain(|t| !habit_ids.contains(&t.id));
+            }
+        }
+
         app.rebuild_cache();
 
         (app, CosmicTask::none())
@@ -1568,7 +1582,17 @@ impl Application for Lamp {
 
                 // CalDAV task/event sync (only if configured)
                 if self.config.sync_ready() {
-                    let tasks: Vec<Task> = self.all_active_tasks();
+                    let mut tasks: Vec<Task> = self.all_active_tasks();
+                    // Stamp dayplan_date on tasks confirmed in today's plan
+                    if let Some(ref plan) = self.day_plan {
+                        for task in &mut tasks {
+                            if plan.confirmed_task_ids.contains(&task.id) {
+                                task.dayplan_date = Some(plan.date);
+                            } else if task.dayplan_date.is_some() {
+                                task.dayplan_date = None;
+                            }
+                        }
+                    }
                     let events = self.events.clone();
                     let caldav_url = self.config.calendars.url.clone();
                     let task_cals = self.config.task_calendar_hrefs();
@@ -1678,8 +1702,22 @@ impl Application for Lamp {
                             self.config.set_sync_token(href, token);
                         }
 
-                        // Remove deleted tasks
+                        // Archive tasks deleted on remote (never hard-delete)
+                        let archive_path = self.config.archive_path();
                         for id in &sync_result.deleted_local {
+                            // Find the task to archive it before removal
+                            let task = self.inbox_tasks.iter()
+                                .chain(self.next_tasks.iter())
+                                .chain(self.waiting_tasks.iter())
+                                .chain(self.someday_tasks.iter())
+                                .chain(self.projects.iter().flat_map(|p| p.tasks.iter()))
+                                .find(|t| t.id == *id)
+                                .cloned();
+                            if let Some(task) = task {
+                                if let Err(e) = OrgWriter::append_to_file(&archive_path, &task) {
+                                    log::error!("Failed to archive remotely-deleted task: {}", e);
+                                }
+                            }
                             self.inbox_tasks.retain(|t| t.id != *id);
                             self.next_tasks.retain(|t| t.id != *id);
                             self.waiting_tasks.retain(|t| t.id != *id);
@@ -1694,6 +1732,12 @@ impl Application for Lamp {
 
                         // Apply pulled tasks (new + updated)
                         for pulled in &sync_result.pulled {
+                            // Check if this task belongs to a habit — update the habit's
+                            // task in place rather than routing into a task list.
+                            if let Some(habit) = self.habits.iter_mut().find(|h| h.task.id == pulled.id) {
+                                habit.task = pulled.clone();
+                                continue;
+                            }
                             let _existing = self.remove_task(pulled.id);
                             if let Some(ref project_name) = pulled.project {
                                 let project_name = project_name.clone();
@@ -1703,6 +1747,36 @@ impl Application for Lamp {
                                 }
                             }
                             self.route_task_by_state(pulled.clone());
+                        }
+                        self.save_habits();
+
+                        // Purge habit tasks that leaked into task lists
+                        // (habits are the authoritative store for their tasks)
+                        let habit_ids: HashSet<uuid::Uuid> = self.habits.iter().map(|h| h.task.id).collect();
+                        self.inbox_tasks.retain(|t| !habit_ids.contains(&t.id));
+                        self.next_tasks.retain(|t| !habit_ids.contains(&t.id));
+                        self.waiting_tasks.retain(|t| !habit_ids.contains(&t.id));
+                        self.someday_tasks.retain(|t| !habit_ids.contains(&t.id));
+                        for project in &mut self.projects {
+                            project.tasks.retain(|t| !habit_ids.contains(&t.id));
+                        }
+
+                        // Reconstruct day plan from synced dayplan_date fields
+                        let today = chrono::Local::now().date_naive();
+                        let mut synced_plan_ids: Vec<uuid::Uuid> = Vec::new();
+                        for pulled in &sync_result.pulled {
+                            if pulled.dayplan_date == Some(today) {
+                                synced_plan_ids.push(pulled.id);
+                            }
+                        }
+                        if !synced_plan_ids.is_empty() {
+                            let plan = self.ensure_day_plan();
+                            for id in synced_plan_ids {
+                                if !plan.confirmed_task_ids.contains(&id) {
+                                    plan.confirmed_task_ids.push(id);
+                                }
+                            }
+                            self.save_day_plan();
                         }
 
                         // Remove deleted events
@@ -2858,9 +2932,12 @@ impl Lamp {
 
         let content: Element<'_, Message> = match what {
                 WhatPage::DailyPlanning => {
+                    // Include habit tasks alongside regular tasks for planning
+                    let mut plan_tasks = self.all_tasks_cache.clone();
+                    plan_tasks.extend(self.habits.iter().map(|h| h.task.clone()));
                     pages::daily_planning::daily_planning_view(
                         &self.day_plan,
-                        &self.all_tasks_cache,
+                        &plan_tasks,
                         &self.media_items,
                         &self.shopping_items,
                         &self.config.contexts,
@@ -3050,7 +3127,17 @@ impl Lamp {
     }
 
     fn rebuild_cache(&mut self) {
-        self.all_tasks_cache = self.all_active_tasks();
+        // Cache excludes habits — they have their own page and do_mode section.
+        // all_active_tasks() still includes them for sync purposes.
+        let mut tasks = Vec::new();
+        tasks.extend(self.inbox_tasks.iter().cloned());
+        tasks.extend(self.next_tasks.iter().cloned());
+        tasks.extend(self.waiting_tasks.iter().cloned());
+        tasks.extend(self.someday_tasks.iter().cloned());
+        for project in &self.projects {
+            tasks.extend(project.tasks.iter().cloned());
+        }
+        self.all_tasks_cache = tasks;
         self.rebuild_task_index();
     }
 
@@ -3242,7 +3329,14 @@ impl Lamp {
     fn ensure_day_plan(&mut self) -> &mut DayPlan {
         let today = chrono::Local::now().date_naive();
         if self.day_plan.as_ref().is_none_or(|dp| dp.is_stale(today)) {
-            self.day_plan = Some(DayPlan::new(today));
+            let mut plan = DayPlan::new(today);
+            // Auto-confirm all due habits into the new day plan
+            for habit in &self.habits {
+                if habit.is_due(today) {
+                    plan.confirmed_task_ids.push(habit.task.id);
+                }
+            }
+            self.day_plan = Some(plan);
             self.rejected_suggestions.clear();
         }
         self.day_plan.as_mut().unwrap()

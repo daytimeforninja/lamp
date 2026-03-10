@@ -2,6 +2,8 @@ package com.lamp.mobile.core.database.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.lamp.mobile.core.database.LampDatabase
 import com.lamp.mobile.core.database.dao.*
 import dagger.Module
@@ -15,11 +17,18 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    private val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN dayplanDate TEXT")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): LampDatabase =
         Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
             .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
+            .addMigrations(MIGRATION_5_6)
             .build()
 
     @Provides fun provideTaskDao(db: LampDatabase): TaskDao = db.taskDao()

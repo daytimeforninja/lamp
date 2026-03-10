@@ -325,14 +325,12 @@ pub async fn sync_notes(
         }
     }
 
-    // Push local notes not on remote (or with no etag = never synced)
+    // Push local notes that have never been synced.
+    // Notes with a sync_etag that are missing from remote were deleted
+    // on the server — keep them locally but don't re-push.
     for note in local_notes {
         let filename = format!("{}.org", note.id);
-        if !matched_filenames.contains(&filename) || note.sync_etag.is_none() {
-            // Only push if truly not on remote (avoid double-push for pulled notes)
-            if matched_filenames.contains(&filename) && note.sync_etag.is_some() {
-                continue;
-            }
+        if note.sync_etag.is_none() && !matched_filenames.contains(&filename) {
             let content = OrgWriter::write_note_file(note);
             match client.put_file(&filename, &content).await {
                 Ok(etag) => {

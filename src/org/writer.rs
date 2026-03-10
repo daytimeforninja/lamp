@@ -434,6 +434,9 @@ impl OrgWriter {
         if let Some(ref sync_href) = task.sync_href {
             out.push_str(&format!("  :SYNC_HREF: {}\n", sync_href));
         }
+        if let Some(ref sync_etag) = task.sync_etag {
+            out.push_str(&format!("  :SYNC_ETAG: {}\n", sync_etag));
+        }
         if let Some(sync_hash) = task.sync_hash {
             out.push_str(&format!("  :SYNC_HASH: {}\n", sync_hash));
         }

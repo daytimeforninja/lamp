@@ -19,6 +19,9 @@ class TaskRepositoryImpl @Inject constructor(
     override fun observeAll(): Flow<List<Task>> =
         taskDao.observeAll().map { list -> list.map { it.toDomain() } }
 
+    override fun observeNonHabit(): Flow<List<Task>> =
+        taskDao.observeNonHabit().map { list -> list.map { it.toDomain() } }
+
     override fun observeByState(state: TaskState): Flow<List<Task>> =
         taskDao.observeByState(state.keyword).map { list -> list.map { it.toDomain() } }
 

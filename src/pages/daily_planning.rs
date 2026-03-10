@@ -240,10 +240,13 @@ fn build_suggestions(
     let mut candidates: Vec<Task> = all_tasks
         .iter()
         .filter(|t| {
-            // Must be eligible: NEXT, or scheduled/deadline <= today
+            // Must be eligible: NEXT, scheduled/deadline <= today, or habit
+            let is_habit = t.extra_tags.iter().any(|tag| tag == "habit")
+                || t.recurrence.is_some();
             let eligible = t.state == TaskState::Next
                 || t.scheduled.is_some_and(|d| d <= today)
-                || t.deadline.is_some_and(|d| d <= today);
+                || t.deadline.is_some_and(|d| d <= today)
+                || is_habit;
             if !eligible || t.state.is_done() {
                 return false;
             }

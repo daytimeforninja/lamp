@@ -37,7 +37,7 @@ fun DoModeScreen(
             modifier = Modifier.padding(16.dp),
         )
 
-        val hasContent = state.confirmedTasks.isNotEmpty() ||
+        val hasContent = state.confirmedTasks.isNotEmpty() || state.dueHabits.isNotEmpty() ||
             state.pickedMedia.isNotEmpty() || state.pickedShopping.isNotEmpty()
 
         if (!hasContent) {
@@ -90,6 +90,26 @@ fun DoModeScreen(
                                 ct.esc?.let { Text("${it}sp", style = MaterialTheme.typography.labelSmall) }
                             },
                         )
+                    }
+                }
+
+                // Habits
+                if (state.dueHabits.isNotEmpty()) {
+                    item {
+                        Text("Habits", style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(16.dp))
+                    }
+                    items(state.dueHabits, key = { "habit-${it.task.id}" }) { habit ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = false,
+                                onCheckedChange = { viewModel.onIntent(DoModeIntent.CompleteHabit(habit.task.id)) },
+                            )
+                            Text(habit.task.title, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
 

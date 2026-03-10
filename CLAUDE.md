@@ -28,6 +28,30 @@ journalctl --user -t lamp -f
 
 Requires Rust 1.85+ (edition 2024). System dependencies for COSMIC/Wayland: libxkbcommon, wayland, vulkan-loader, libinput, systemd, mesa, expat, fontconfig, freetype, openssl.
 
+### Mobile (Android)
+
+```bash
+cd lamp-mobile
+
+# Build debug APK (uses nix for Android SDK)
+nix develop -c gradle assembleDebug
+
+# Install on connected device
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Package: `com.lamp.mobile`. Requires JDK 17 (provided by nix). APK output: `lamp-mobile/app/build/outputs/apk/debug/app-debug.apk`.
+
+### Refresh script
+
+`scripts/refresh.sh` rebuilds and deploys both platforms in one command. Must be run from inside the nix devshell (`nix develop`).
+
+```bash
+./scripts/refresh.sh           # build both, launch desktop, push mobile via adb
+./scripts/refresh.sh desktop   # desktop only
+./scripts/refresh.sh mobile    # mobile only
+```
+
 ## Architecture
 
 Lamp is a GTD task manager for the COSMIC desktop (libcosmic/iced) backed by org-mode files. It uses the **Elm architecture**: a single `Lamp` struct holds all state, a `Message` enum describes every possible user action, and `update()` processes messages while `view()` renders the UI.

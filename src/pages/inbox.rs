@@ -16,7 +16,10 @@ use crate::sync::imap::ImapEmail;
 /// doesn't move the task out of inbox — only a state change or project
 /// assignment does that.
 fn is_inbox_task(task: &Task) -> bool {
-    task.state == TaskState::Todo && task.project.is_none()
+    task.state == TaskState::Todo
+        && task.project.is_none()
+        && !task.extra_tags.contains(&"habit".to_string())
+        && task.recurrence.is_none()
 }
 
 pub fn inbox_view<'a>(

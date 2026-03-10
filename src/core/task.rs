@@ -99,6 +99,8 @@ pub struct Task {
     pub deadline_time: Option<String>,
     /// Logbook state-change entries (timestamps of DONE transitions).
     pub logbook_entries: Vec<NaiveDateTime>,
+    /// Date this task was added to the day plan (synced via X-LAMP-DAYPLAN).
+    pub dayplan_date: Option<NaiveDate>,
     pub sync_href: Option<String>,
     pub sync_hash: Option<u64>,
     /// Original CalDAV UID string (preserved for case-sensitive roundtrip)
@@ -130,6 +132,7 @@ impl Task {
             scheduled_time: None,
             deadline_time: None,
             logbook_entries: Vec::new(),
+            dayplan_date: None,
             sync_href: None,
             sync_hash: None,
             sync_uid: None,

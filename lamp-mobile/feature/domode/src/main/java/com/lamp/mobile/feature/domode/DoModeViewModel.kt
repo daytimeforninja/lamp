@@ -3,9 +3,11 @@ package com.lamp.mobile.feature.domode
 import androidx.lifecycle.viewModelScope
 import com.lamp.mobile.core.common.MviViewModel
 import com.lamp.mobile.core.data.repository.DayPlanRepository
+import com.lamp.mobile.core.data.repository.HabitRepository
 import com.lamp.mobile.core.data.repository.ListItemRepository
 import com.lamp.mobile.core.data.repository.TaskRepository
 import com.lamp.mobile.core.model.DayPlan
+import com.lamp.mobile.core.model.Habit
 import com.lamp.mobile.core.model.ListItem
 import com.lamp.mobile.core.model.ListKind
 import com.lamp.mobile.core.model.Task
@@ -19,12 +21,14 @@ import javax.inject.Inject
 data class DoModeUiState(
     val dayPlan: DayPlan = DayPlan(),
     val confirmedTasks: List<Task> = emptyList(),
+    val dueHabits: List<Habit> = emptyList(),
     val pickedMedia: List<ListItem> = emptyList(),
     val pickedShopping: List<ListItem> = emptyList(),
 )
 
 sealed class DoModeIntent {
     data class MarkDone(val taskId: UUID) : DoModeIntent()
+    data class CompleteHabit(val taskId: UUID) : DoModeIntent()
     data class ToggleMediaDone(val itemId: UUID) : DoModeIntent()
     data class ToggleShoppingDone(val itemId: UUID) : DoModeIntent()
 }
@@ -33,6 +37,7 @@ sealed class DoModeIntent {
 class DoModeViewModel @Inject constructor(
     private val dayPlanRepo: DayPlanRepository,
     private val taskRepo: TaskRepository,
+    private val habitRepo: HabitRepository,
     private val listItemRepo: ListItemRepository,
 ) : MviViewModel<DoModeUiState, DoModeIntent, Nothing>(DoModeUiState()) {
 
@@ -40,15 +45,18 @@ class DoModeViewModel @Inject constructor(
         combine(
             dayPlanRepo.observeByDate(LocalDate.now()),
             taskRepo.observeAll(),
+            habitRepo.observeAll(),
             listItemRepo.observeByKind(ListKind.MEDIA),
             listItemRepo.observeByKind(ListKind.SHOPPING),
-        ) { plan, allTasks, allMedia, allShopping ->
-            val dayPlan = plan ?: DayPlan(date = LocalDate.now())
+        ) { plan, allTasks, allHabits, allMedia, allShopping ->
+            val today = LocalDate.now()
+            val dayPlan = plan ?: DayPlan(date = today)
             val confirmed = allTasks.filter { it.id in dayPlan.confirmedTaskIds }
+            val due = allHabits.filter { it.isDue(today) }
             val media = allMedia.filter { it.id in dayPlan.pickedMediaIds }
             val shopping = allShopping.filter { it.id in dayPlan.pickedShoppingIds }
             updateState { copy(dayPlan = dayPlan, confirmedTasks = confirmed,
-                pickedMedia = media, pickedShopping = shopping) }
+                dueHabits = due, pickedMedia = media, pickedShopping = shopping) }
         }.launchIn(viewModelScope)
     }
 
@@ -59,6 +67,19 @@ class DoModeViewModel @Inject constructor(
                 taskRepo.save(task.complete())
                 val plan = dayPlanRepo.getByDate(java.time.LocalDate.now()) ?: currentState.dayPlan
                 dayPlanRepo.save(plan.completeTask(task.id, task.title, task.esc))
+            }
+            is DoModeIntent.CompleteHabit -> {
+                val habit = habitRepo.getByTaskId(intent.taskId) ?: return
+                val now = java.time.LocalDateTime.now()
+                val updated = habit.copy(
+                    completions = habit.completions + now,
+                ).recalculateStreak(java.time.LocalDate.now())
+                habitRepo.saveHabitOnly(updated)
+                // Also update the task's logbook so it syncs
+                val task = taskRepo.getById(intent.taskId)
+                if (task != null) {
+                    taskRepo.save(task.copy(logbookEntries = task.logbookEntries + now))
+                }
             }
             is DoModeIntent.ToggleMediaDone -> {
                 val item = listItemRepo.getById(intent.itemId) ?: return

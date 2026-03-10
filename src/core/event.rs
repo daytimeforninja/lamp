@@ -25,6 +25,7 @@ pub struct CalendarEvent {
     // Sync metadata
     pub sync_href: Option<String>,
     pub sync_hash: Option<u64>,
+    pub sync_etag: Option<String>,
 }
 
 impl CalendarEvent {
@@ -42,6 +43,7 @@ impl CalendarEvent {
             calendar_name: String::new(),
             sync_href: None,
             sync_hash: None,
+            sync_etag: None,
         }
     }
 }

@@ -127,6 +127,11 @@ pub fn task_to_vcalendar(task: &Task) -> String {
         ));
     }
 
+    // X-LAMP-DAYPLAN (day plan date)
+    if let Some(dayplan) = task.dayplan_date {
+        lines.push(format!("X-LAMP-DAYPLAN:{}", format_date(dayplan)));
+    }
+
     // X-LAMP-LOGBOOK (habit completion timestamps)
     if !task.logbook_entries.is_empty() {
         let entries: Vec<String> = task
@@ -171,6 +176,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
     let mut lamp_recurrence: Option<String> = None;
     let mut lamp_logbook: Option<String> = None;
     let mut lamp_tags: Option<String> = None;
+    let mut lamp_dayplan: Option<NaiveDate> = None;
 
     for line in unfolded.lines() {
         let line = line.trim_end();
@@ -214,6 +220,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
                 "X-LAMP-RECURRENCE" => lamp_recurrence = Some(value.to_string()),
                 "X-LAMP-LOGBOOK" => lamp_logbook = Some(value.to_string()),
                 "X-LAMP-TAGS" => lamp_tags = Some(value.to_string()),
+                "X-LAMP-DAYPLAN" => lamp_dayplan = parse_ical_date(value),
                 _ => {}
             }
         }
@@ -268,6 +275,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
             .unwrap_or_default(),
         scheduled_time: None,
         deadline_time: None,
+        dayplan_date: lamp_dayplan,
         logbook_entries: lamp_logbook
             .map(|s| {
                 s.split(',')

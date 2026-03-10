@@ -7,6 +7,7 @@ import java.util.UUID
 
 interface TaskRepository {
     fun observeAll(): Flow<List<Task>>
+    fun observeNonHabit(): Flow<List<Task>>
     fun observeByState(state: TaskState): Flow<List<Task>>
     fun observeInbox(): Flow<List<Task>>
     fun observeNextActions(): Flow<List<Task>>

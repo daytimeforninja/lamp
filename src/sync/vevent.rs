@@ -187,6 +187,7 @@ pub fn vcalendar_to_events(ical: &str) -> Vec<CalendarEvent> {
         calendar_name: String::new(),
         sync_href: None,
         sync_hash: None,
+        sync_etag: None,
     };
 
     match rrule {
@@ -405,6 +406,11 @@ fn make_instance(
             None
         },
         sync_hash: base.sync_hash,
+        sync_etag: if index == 0 {
+            base.sync_etag.clone()
+        } else {
+            None
+        },
     }
 }
 

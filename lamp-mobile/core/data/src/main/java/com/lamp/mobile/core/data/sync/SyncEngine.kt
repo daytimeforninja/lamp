@@ -2,6 +2,7 @@ package com.lamp.mobile.core.data.sync
 
 import com.lamp.mobile.core.data.credential.CredentialStore
 import com.lamp.mobile.core.data.repository.*
+import java.time.LocalDate
 import com.lamp.mobile.core.model.Habit
 import com.lamp.mobile.core.model.Project
 import com.lamp.mobile.core.model.SyncConflict
@@ -36,6 +37,7 @@ class SyncEngine @Inject constructor(
     private val taskRepo: TaskRepository,
     private val projectRepo: ProjectRepository,
     private val habitRepo: HabitRepository,
+    private val dayPlanRepo: DayPlanRepository,
     private val calendarEventRepo: CalendarEventRepository,
     private val contactRepo: ContactRepository,
     private val noteRepo: NoteRepository,
@@ -55,9 +57,10 @@ class SyncEngine @Inject constructor(
                 tasksDown += result.downloaded
                 tasksDel += result.deleted
                 conflicts.addAll(result.conflicts)
-                // Reconstruct projects and habits from synced tasks
+                // Reconstruct projects, habits, and day plan from synced tasks
                 reconstructProjects()
                 reconstructHabits()
+                reconstructDayPlan()
             } catch (e: Exception) {
                 errors.add("Task sync: ${e.message}")
             }
@@ -128,9 +131,7 @@ class SyncEngine @Inject constructor(
                     taskRepo.markSynced(task.id, hash, newEtag, href)
                     uploaded++
                 } else {
-                    Log.w("LampSync", "PUT failed for ${task.title}, clearing dirty flag")
-                    // Clear dirty flag to prevent infinite retry; next pull will reconcile
-                    taskRepo.markSynced(task.id, hash, etag ?: "", href)
+                    Log.e("LampSync", "PUT failed for ${task.title}, will retry next sync")
                 }
             }
 
@@ -253,12 +254,30 @@ class SyncEngine @Inject constructor(
                     .recalculateStreak(java.time.LocalDate.now())
                 habitRepo.saveHabitOnly(habit)
             } else if (task.logbookEntries.isNotEmpty() && existing.completions != task.logbookEntries) {
-                // Update completions from synced logbook entries
-                Log.d("LampSync", "Updating habit completions for: ${task.title}")
-                val updated = existing.copy(task = task, completions = task.logbookEntries)
+                // Merge completions from both sides (local + remote may have different entries)
+                Log.d("LampSync", "Merging habit completions for: ${task.title}")
+                val combined = (existing.completions + task.logbookEntries).distinct().sorted()
+                val updated = existing.copy(task = task, completions = combined)
                     .recalculateStreak(java.time.LocalDate.now())
                 habitRepo.saveHabitOnly(updated)
             }
+        }
+    }
+
+    private suspend fun reconstructDayPlan() {
+        val today = LocalDate.now()
+        val allTasks = taskRepo.getAll()
+        val dayplanTaskIds = allTasks
+            .filter { it.dayplanDate == today }
+            .map { it.id }
+        if (dayplanTaskIds.isEmpty()) return
+
+        val existing = dayPlanRepo.getByDate(today)
+            ?: com.lamp.mobile.core.model.DayPlan(date = today)
+        val mergedIds = (existing.confirmedTaskIds + dayplanTaskIds).distinct()
+        if (mergedIds != existing.confirmedTaskIds) {
+            Log.d("LampSync", "Reconstructed day plan: ${mergedIds.size} tasks")
+            dayPlanRepo.save(existing.copy(confirmedTaskIds = mergedIds))
         }
     }
 
@@ -337,8 +356,10 @@ class SyncEngine @Inject constructor(
                 synced++
             }
 
-            // 3. Pull remote contacts and merge
+            // 3. Pull remote contacts and merge (excluding just-deleted ones)
+            val justDeletedHrefs = deletedContacts.mapNotNull { it.syncHref }.toSet()
             val remoteContacts = client.fetchContacts().getOrThrow()
+                .filter { (href, _) -> href !in justDeletedHrefs }
             val localContacts = contactRepo.getAll()
             val merged = CardDavClient.mergeContacts(localContacts, remoteContacts)
 
