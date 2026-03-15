@@ -16,7 +16,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lamp.mobile.core.common.ui.QuickCaptureBar
 import com.lamp.mobile.core.common.ui.SyncPullRefreshBox
-import com.lamp.mobile.core.model.ContactCategory
 import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -25,8 +24,22 @@ fun ContactsScreen(
     viewModel: ContactsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
-    val personalContacts = state.contacts.filter { it.category == ContactCategory.PERSONAL }
-    val serviceContacts = state.contacts.filter { it.category == ContactCategory.SERVICE }
+
+    // Groups to hide from the UI
+    val hiddenGroups = setOf("personal", "archive", "autosaved")
+
+    // Group contacts by their visible groups only
+    val contactsByGroup = remember(state.contacts) {
+        val map = sortedMapOf<String, MutableList<com.lamp.mobile.core.model.Contact>>()
+        for (contact in state.contacts) {
+            for (group in contact.groups) {
+                if (group.lowercase() !in hiddenGroups) {
+                    map.getOrPut(group) { mutableListOf() }.add(contact)
+                }
+            }
+        }
+        map
+    }
 
     // Delete confirmation dialog
     if (state.showDeleteConfirm != null) {
@@ -74,29 +87,12 @@ fun ContactsScreen(
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            if (personalContacts.isNotEmpty()) {
-                item {
-                    Text("Personal", style = MaterialTheme.typography.titleSmall,
+            for ((groupName, groupContacts) in contactsByGroup) {
+                item(key = "header-$groupName") {
+                    Text(groupName, style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                 }
-                items(personalContacts, key = { it.id }) { contact ->
-                    ContactCard(
-                        contact = contact,
-                        isFlipped = contact.id == state.flippedId,
-                        onFlip = { viewModel.onIntent(ContactsIntent.Flip(contact.id)) },
-                        onMarkContacted = { viewModel.onIntent(ContactsIntent.MarkContacted(contact.id)) },
-                        onEdit = { viewModel.onIntent(ContactsIntent.Edit(contact.id)) },
-                        onDelete = { viewModel.onIntent(ContactsIntent.Delete(contact.id)) },
-                    )
-                }
-            }
-
-            if (serviceContacts.isNotEmpty()) {
-                item {
-                    Text("Service", style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                }
-                items(serviceContacts, key = { it.id }) { contact ->
+                items(groupContacts, key = { "${groupName}-${it.id}" }) { contact ->
                     ContactCard(
                         contact = contact,
                         isFlipped = contact.id == state.flippedId,
@@ -174,21 +170,14 @@ private fun ContactEditForm(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Category:", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.width(8.dp))
-                FilterChip(
-                    selected = form.category == ContactCategory.PERSONAL,
-                    onClick = { onFieldChange("category", "Personal") },
-                    label = { Text("Personal") },
-                )
-                Spacer(Modifier.width(8.dp))
-                FilterChip(
-                    selected = form.category == ContactCategory.SERVICE,
-                    onClick = { onFieldChange("category", "Service") },
-                    label = { Text("Service") },
-                )
-            }
+            OutlinedTextField(
+                value = form.groups,
+                onValueChange = { onFieldChange("groups", it) },
+                label = { Text("Groups") },
+                placeholder = { Text("Personal, Family, Work...") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -224,7 +213,7 @@ private fun ContactCard(
             .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         if (!isFlipped) {
-            // Front: name, category, last contacted — tap to flip
+            // Front: name, groups, last contacted — tap to flip
             Row(
                 modifier = Modifier.clickable(onClick = onFlip).padding(16.dp).fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -233,6 +222,11 @@ private fun ContactCard(
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(contact.name, style = MaterialTheme.typography.bodyLarge)
+                    if (contact.groups.isNotEmpty()) {
+                        Text(contact.groups.joinToString(", "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     contact.lastContacted?.let {
                         Text("Last: ${it.format(DateTimeFormatter.ISO_LOCAL_DATE)}",
                             style = MaterialTheme.typography.labelSmall,
@@ -253,6 +247,9 @@ private fun ContactCard(
                 contact.phone?.let { Text("Phone: $it", style = MaterialTheme.typography.bodySmall) }
                 contact.website?.let { Text("Web: $it", style = MaterialTheme.typography.bodySmall) }
                 contact.signal?.let { Text("Signal: $it", style = MaterialTheme.typography.bodySmall) }
+                if (contact.groups.isNotEmpty()) {
+                    Text("Groups: ${contact.groups.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+                }
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(

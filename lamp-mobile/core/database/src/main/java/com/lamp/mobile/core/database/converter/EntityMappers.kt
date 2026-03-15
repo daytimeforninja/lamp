@@ -53,6 +53,32 @@ object EntityMappers {
         } catch (_: Exception) { emptyList() }
     }
 
+    private fun clockEntriesToJson(entries: List<Pair<LocalDateTime, LocalDateTime>>): String {
+        val arr = JSONArray()
+        entries.forEach { (start, end) ->
+            val obj = JSONObject()
+            obj.put("start", start.format(DATETIME_FMT))
+            obj.put("end", end.format(DATETIME_FMT))
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    private fun jsonToClockEntries(json: String): List<Pair<LocalDateTime, LocalDateTime>> {
+        if (json.isBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).mapNotNull { i ->
+                try {
+                    val obj = arr.getJSONObject(i)
+                    val start = LocalDateTime.parse(obj.getString("start"), DATETIME_FMT)
+                    val end = LocalDateTime.parse(obj.getString("end"), DATETIME_FMT)
+                    start to end
+                } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) { emptyList() }
+    }
+
     private fun completedTasksToJson(tasks: List<CompletedTask>): String {
         val arr = JSONArray()
         tasks.forEach { t ->
@@ -95,6 +121,10 @@ object EntityMappers {
         } catch (_: Exception) { emptyList() }
     }
 
+    // --- Widget helpers (non-extension for easy calling from outside) ---
+    fun mapTask(entity: TaskEntity): Task = entity.toDomain()
+    fun mapDayPlan(entity: DayPlanEntity): DayPlan = entity.toDomain()
+
     // --- Task ---
 
     private fun parseDate(s: String?): LocalDate? =
@@ -124,6 +154,7 @@ object EntityMappers {
         scheduledTime = scheduledTime,
         deadlineTime = deadlineTime,
         logbookEntries = jsonToDatetimeList(logbookEntries),
+        clockEntries = jsonToClockEntries(clockEntries),
         dayplanDate = parseDate(dayplanDate),
         syncHref = syncHref,
         syncHash = syncHash,
@@ -152,6 +183,7 @@ object EntityMappers {
         scheduledTime = scheduledTime,
         deadlineTime = deadlineTime,
         logbookEntries = datetimeListToJson(logbookEntries),
+        clockEntries = clockEntriesToJson(clockEntries),
         dayplanDate = dayplanDate?.format(DATE_FMT),
         syncHref = syncHref,
         syncHash = syncHash,
@@ -196,6 +228,9 @@ object EntityMappers {
         streak = streak,
         bestStreak = bestStreak,
     )
+
+    fun mapHabit(habitEntity: HabitEntity, taskEntity: TaskEntity): Habit =
+        habitEntity.toDomain(taskEntity.toDomain())
 
     // --- DayPlan ---
 
@@ -295,7 +330,14 @@ object EntityMappers {
         website = website,
         signal = signal,
         preferredMethod = preferredMethod,
-        category = ContactCategory.fromString(category),
+        groups = if (groups.isNotBlank()) {
+            groups.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        } else if (category.isNotBlank()) {
+            // Legacy: migrate from old single-category column
+            listOf(category)
+        } else {
+            listOf("Personal")
+        },
         lastContacted = parseDate(lastContacted),
         syncHref = syncHref,
         syncEtag = syncEtag,
@@ -311,7 +353,8 @@ object EntityMappers {
         website = website,
         signal = signal,
         preferredMethod = preferredMethod,
-        category = category.toString(),
+        category = groups.firstOrNull() ?: "Personal",
+        groups = groups.joinToString(","),
         lastContacted = lastContacted?.format(DATE_FMT),
         syncHref = syncHref,
         syncEtag = syncEtag,

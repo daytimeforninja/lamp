@@ -1,6 +1,8 @@
 use reqwest::{Client, Method, StatusCode};
 use std::path::Path;
 
+use crate::core::account::Account;
+use crate::core::list_item::ListItem;
 use crate::core::note::Note;
 use crate::org::{convert, writer::OrgWriter};
 
@@ -19,6 +21,14 @@ pub struct NoteSyncResult {
     pub pushed: usize,
     pub deleted_remote: usize,
     pub errors: Vec<String>,
+}
+
+/// Result of syncing a single-file collection (shopping, accounts).
+#[derive(Debug, Clone)]
+pub struct FileSyncResult<T> {
+    pub items: Vec<T>,
+    pub pulled: usize,
+    pub pushed: usize,
 }
 
 /// Minimal WebDAV client for note sync.
@@ -367,4 +377,93 @@ pub async fn sync_notes(
     );
 
     Ok(result)
+}
+
+/// Sync shopping items as a single org file on WebDAV.
+///
+/// Strategy: pull remote, merge by UUID (remote wins for conflicts,
+/// keep local-only items), push merged result back.
+pub async fn sync_shopping(
+    client: &WebDavClient,
+    local_items: &[ListItem],
+) -> Result<FileSyncResult<ListItem>, String> {
+    sync_single_file(
+        client,
+        "shopping.org",
+        local_items,
+        |items| OrgWriter::write_list_items_file("Shopping", items),
+        |content| convert::parse_list_items(content),
+        |item| item.id,
+    )
+    .await
+}
+
+/// Sync accounts as a single org file on WebDAV.
+pub async fn sync_accounts(
+    client: &WebDavClient,
+    local_items: &[Account],
+) -> Result<FileSyncResult<Account>, String> {
+    sync_single_file(
+        client,
+        "accounts.org",
+        local_items,
+        |items| OrgWriter::write_accounts_file(items),
+        |content| convert::parse_accounts(content),
+        |item| item.id,
+    )
+    .await
+}
+
+/// Generic single-file sync: pull, merge by UUID, push.
+async fn sync_single_file<T: Clone>(
+    client: &WebDavClient,
+    filename: &str,
+    local_items: &[T],
+    serialize: impl Fn(&[T]) -> String,
+    deserialize: impl Fn(&str) -> Vec<T>,
+    get_id: impl Fn(&T) -> uuid::Uuid,
+) -> Result<FileSyncResult<T>, String> {
+    let mut pulled = 0;
+    let mut pushed = 0;
+
+    // Try to GET the remote file
+    let remote_items = match client.get_file(filename).await {
+        Ok((content, _etag)) => {
+            let items = deserialize(&content);
+            pulled = items.len();
+            items
+        }
+        Err(_) => Vec::new(), // File doesn't exist remotely yet
+    };
+
+    // Merge: remote items win for matching UUIDs, keep local-only items
+    let remote_ids: std::collections::HashSet<uuid::Uuid> =
+        remote_items.iter().map(&get_id).collect();
+    let mut merged = remote_items;
+    for item in local_items {
+        if !remote_ids.contains(&get_id(item)) {
+            merged.push(item.clone());
+        }
+    }
+
+    // Push merged result
+    let content = serialize(&merged);
+    if let Err(e) = client.put_file(filename, &content).await {
+        log::warn!("Failed to PUT {}: {}", filename, e);
+    } else {
+        pushed = 1;
+    }
+
+    log::info!(
+        "WebDAV {} sync: {} remote items, {} merged total",
+        filename,
+        pulled,
+        merged.len()
+    );
+
+    Ok(FileSyncResult {
+        items: merged,
+        pulled,
+        pushed,
+    })
 }

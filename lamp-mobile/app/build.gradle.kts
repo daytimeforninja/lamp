@@ -63,6 +63,7 @@ dependencies {
     implementation(project(":feature:conflicts"))
     implementation(project(":feature:taskdetail"))
     implementation(project(":feature:alltasks"))
+    implementation(project(":feature:archive"))
     implementation(project(":feature:agenda"))
     implementation(project(":feature:accounts"))
     implementation(project(":sync"))
@@ -81,6 +82,7 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
     implementation(libs.workmanager)
     implementation(libs.workmanager.hilt)
+    implementation(libs.room.runtime)
     ksp(libs.hilt.compiler)
     ksp(libs.hilt.androidx.compiler)
 

@@ -123,13 +123,6 @@ pub struct NoteEditBuffer {
     pub source: String,
 }
 
-#[derive(Debug, Clone)]
-pub enum EmailSuggestionState {
-    Suggested(crate::sync::anthropic::BatchEmailSuggestion),
-    NoAction,
-    Dismissed,
-}
-
 pub struct Lamp {
     core: Core,
     nav_model: nav_bar::Model,
@@ -162,10 +155,17 @@ pub struct Lamp {
     // All Tasks sort
     all_tasks_sort: Option<(SortColumn, bool)>, // (column, ascending)
 
+    // Archive browsing (lazy-loaded)
+    archive_tasks: Vec<Task>,
+    archive_search: String,
+
     // Drawer & capture
     context_drawer_state: Option<ContextDrawerState>,
     new_task_form: NewTaskForm,
     launch_mode: LaunchMode,
+
+    // Time tracking — active work timer in do mode
+    active_timer: Option<(uuid::Uuid, chrono::NaiveDateTime)>,
 
     // UI state
     inbox_input: String,
@@ -216,6 +216,7 @@ pub struct Lamp {
 
     // Sync
     sync_status: SyncStatus,
+    sync_anim_frame: usize,
     /// Discovered calendars from CalDAV test connection
     discovered_calendars: Vec<CalendarInfo>,
     /// Password inputs for [Calendars, Contacts, Notes, Imap]
@@ -226,11 +227,6 @@ pub struct Lamp {
     // IMAP emails
     imap_emails: Vec<ImapEmail>,
 
-    // AI batch email suggestions
-    anthropic_api_key_input: String,
-    anthropic_test_status: Option<Result<String, String>>,
-    email_suggestions: HashMap<u32, EmailSuggestionState>,
-    ai_batch_processing: bool,
     /// UIDs of emails archived this session — filtered out on re-fetch
     archived_email_uids: HashSet<u32>,
 
@@ -345,9 +341,12 @@ impl Application for Lamp {
             all_tasks_cache: Vec::new(),
             task_index: HashMap::new(),
             all_tasks_sort: None,
+            archive_tasks: Vec::new(),
+            archive_search: String::new(),
             context_drawer_state,
             new_task_form: NewTaskForm::default(),
             launch_mode,
+            active_timer: None,
             inbox_input: String::new(),
             project_input: String::new(),
             project_task_inputs: HashMap::new(),
@@ -383,14 +382,11 @@ impl Application for Lamp {
             event_form: None,
             review_checked: HashSet::new(),
             sync_status: SyncStatus::default(),
+            sync_anim_frame: 0,
             discovered_calendars: Vec::new(),
             service_passwords: [String::new(), String::new(), String::new(), String::new()],
             service_test_status: [None, None, None, None],
             imap_emails: Vec::new(),
-            anthropic_api_key_input: String::new(),
-            anthropic_test_status: None,
-            email_suggestions: HashMap::new(),
-            ai_batch_processing: false,
             archived_email_uids: HashSet::new(),
             pending_completions: Vec::new(),
             sync_conflicts: Vec::new(),
@@ -438,6 +434,12 @@ impl Application for Lamp {
             self.active_view = ActiveView::What(page);
             self.search_query.clear();
             self.nav_model.activate(id);
+
+            // Lazy-load archive (reload each visit to pick up new completions)
+            if page == WhatPage::Archive {
+                self.archive_tasks = load_tasks(&self.config.archive_path());
+                self.archive_search.clear();
+            }
         }
         CosmicTask::none()
     }
@@ -473,11 +475,23 @@ impl Application for Lamp {
     fn update(&mut self, message: Message) -> CosmicTask<Message> {
         match message {
             Message::SetMode(mode) => {
+                // Save running timer before switching modes
+                if let Some((active_id, start)) = self.active_timer.take() {
+                    let now = chrono::Local::now().naive_local();
+                    self.modify_task(active_id, |task| {
+                        task.clock_entries.push((start, now));
+                    });
+                    self.save_all();
+                }
                 self.app_mode = mode;
             }
 
             Message::SearchQueryChanged(q) => {
                 self.search_query = q;
+            }
+
+            Message::ArchiveSearchChanged(q) => {
+                self.archive_search = q;
             }
 
             Message::SelectWhen(_) => {
@@ -999,9 +1013,9 @@ impl Application for Lamp {
                 }
             }
 
-            Message::SetContactCategory(idx, cat) => {
+            Message::SetContactGroups(idx, ref groups) => {
                 if let Some(c) = self.contacts.get_mut(idx) {
-                    c.category = cat;
+                    c.groups = groups.clone();
                     self.save_contacts();
                 }
             }
@@ -1379,6 +1393,18 @@ impl Application for Lamp {
 
             // Do mode messages
             Message::DoMarkDone(id) => {
+                // Stop active timer if running for this task
+                if let Some((active_id, start)) = self.active_timer.take() {
+                    let now = chrono::Local::now().naive_local();
+                    self.modify_task(active_id, |task| {
+                        task.clock_entries.push((start, now));
+                    });
+                    // If we stopped a different task's timer, don't lose it
+                    if active_id != id {
+                        // Timer was for another task; it's now saved
+                    }
+                }
+
                 let is_completed = self.day_plan.as_ref()
                     .map(|p| p.completed_tasks.iter().any(|ct| ct.id == id))
                     .unwrap_or(false);
@@ -1432,6 +1458,33 @@ impl Application for Lamp {
                     plan.picked_shopping_ids.retain(|i| *i != id);
                     self.save_day_plan();
                 }
+            }
+
+            Message::ToggleWorkTimer(id) => {
+                let now = chrono::Local::now().naive_local();
+                if let Some((active_id, start)) = self.active_timer.take() {
+                    // Stop the running timer and log the clock entry
+                    self.modify_task(active_id, |task| {
+                        task.clock_entries.push((start, now));
+                    });
+                    self.save_all();
+                    self.rebuild_cache();
+                    // If clicking a different task, start its timer
+                    if active_id != id {
+                        self.active_timer = Some((id, now));
+                    }
+                } else {
+                    // Start timer for this task
+                    self.active_timer = Some((id, now));
+                }
+            }
+
+            Message::TimerTick => {
+                // Just triggers a re-render so the timer display updates
+            }
+
+            Message::SyncAnimTick => {
+                self.sync_anim_frame = (self.sync_anim_frame + 1) % 8;
             }
 
             Message::SetAllTasksSort(col) => {
@@ -1626,24 +1679,59 @@ impl Application for Lamp {
                     ));
                 }
 
-                // WebDAV notes sync
+                // WebDAV notes + shopping + accounts sync
                 let notes_url = self.config.notes_sync.url.trim().to_string();
                 if !notes_url.is_empty() {
+                    let notes_url1 = notes_url.clone();
                     let local_notes = self.notes.clone();
                     let notes_dir = self.config.notes_dir();
                     batch.push(CosmicTask::perform(
                         async move {
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url).await {
+                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url1).await {
                                 Ok(Some(creds)) => creds,
                                 Ok(None) => return Err("No WebDAV credentials stored".to_string()),
                                 Err(e) => return Err(format!("Keyring error: {}", e)),
                             };
                             let client = crate::sync::webdav::WebDavClient::new(
-                                &notes_url, &username, &pw,
+                                &notes_url1, &username, &pw,
                             )?;
                             crate::sync::webdav::sync_notes(&client, &local_notes, &notes_dir).await
                         },
                         |result| cosmic::Action::App(Message::SyncNotesCompleted(result)),
+                    ));
+
+                    let shopping_items = self.shopping_items.clone();
+                    let notes_url2 = notes_url.clone();
+                    batch.push(CosmicTask::perform(
+                        async move {
+                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url2).await {
+                                Ok(Some(creds)) => creds,
+                                Ok(None) => return Err("No WebDAV credentials stored".to_string()),
+                                Err(e) => return Err(format!("Keyring error: {}", e)),
+                            };
+                            let client = crate::sync::webdav::WebDavClient::new(
+                                &notes_url2, &username, &pw,
+                            )?;
+                            crate::sync::webdav::sync_shopping(&client, &shopping_items).await
+                        },
+                        |result| cosmic::Action::App(Message::SyncShoppingCompleted(result)),
+                    ));
+
+                    let accounts = self.accounts.clone();
+                    let notes_url3 = notes_url;
+                    batch.push(CosmicTask::perform(
+                        async move {
+                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url3).await {
+                                Ok(Some(creds)) => creds,
+                                Ok(None) => return Err("No WebDAV credentials stored".to_string()),
+                                Err(e) => return Err(format!("Keyring error: {}", e)),
+                            };
+                            let client = crate::sync::webdav::WebDavClient::new(
+                                &notes_url3, &username, &pw,
+                            )?;
+                            crate::sync::webdav::sync_accounts(&client, &accounts).await
+                        },
+                        |result| cosmic::Action::App(Message::SyncAccountsCompleted(result)),
                     ));
                 }
 
@@ -2015,6 +2103,42 @@ impl Application for Lamp {
                 self.finish_sync_op();
             }
 
+            Message::SyncShoppingCompleted(result) => {
+                match result {
+                    Ok(sync_result) => {
+                        self.shopping_items = sync_result.items;
+                        self.save_shopping();
+                        log::info!(
+                            "Shopping sync: {} remote, {} pushed",
+                            sync_result.pulled,
+                            sync_result.pushed,
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Shopping sync failed: {}", e);
+                    }
+                }
+                self.finish_sync_op();
+            }
+
+            Message::SyncAccountsCompleted(result) => {
+                match result {
+                    Ok(sync_result) => {
+                        self.accounts = sync_result.items;
+                        self.save_accounts();
+                        log::info!(
+                            "Accounts sync: {} remote, {} pushed",
+                            sync_result.pulled,
+                            sync_result.pushed,
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Accounts sync failed: {}", e);
+                    }
+                }
+                self.finish_sync_op();
+            }
+
             Message::ContactsFetched(result) => {
                 match result {
                     Ok(remote) => {
@@ -2050,12 +2174,6 @@ impl Application for Lamp {
                                 .filter(|e| !self.archived_email_uids.contains(&e.uid))
                                 .collect();
                         }
-                        // Clear old suggestions and auto-trigger batch analysis
-                        self.email_suggestions.clear();
-                        if !self.imap_emails.is_empty() {
-                            self.finish_sync_op();
-                            return self.update(Message::SuggestEmailTasks);
-                        }
                     }
                     Err(e) => {
                         log::error!("IMAP fetch failed: {}", e);
@@ -2064,172 +2182,31 @@ impl Application for Lamp {
                 self.finish_sync_op();
             }
 
-            Message::SuggestEmailTasks => {
-                if self.imap_emails.is_empty() || self.ai_batch_processing {
-                    return CosmicTask::none();
-                }
+            Message::CreateTaskFromEmail(uid) => {
+                if let Some(email) = self.imap_emails.iter().find(|e| e.uid == uid) {
+                    let mut task = Task::new(&email.subject);
 
-                let emails: Vec<(u32, String, String, Option<String>, String)> = self
-                    .imap_emails
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.uid,
-                            e.subject.clone(),
-                            e.from.clone(),
-                            e.date.map(|d| d.format("%Y-%m-%d %H:%M").to_string()),
-                            e.body_full.clone(),
-                        )
-                    })
-                    .collect();
-                let contexts = self.config.contexts.clone();
-                let project_names: Vec<String> =
-                    self.projects.iter().map(|p| p.name.clone()).collect();
-                let existing_titles: Vec<String> =
-                    self.all_tasks_cache.iter().map(|t| t.title.clone()).collect();
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-                self.ai_batch_processing = true;
-
-                return CosmicTask::perform(
-                    async move {
-                        let api_key = match crate::sync::anthropic::load_api_key().await {
-                            Ok(Some(key)) => key,
-                            _ => return Err("No Anthropic API key configured".to_string()),
-                        };
-                        crate::sync::anthropic::extract_tasks_from_emails_batch(
-                            &api_key,
-                            emails,
-                            &contexts,
-                            &project_names,
-                            &existing_titles,
-                            &today,
-                        )
-                        .await
-                    },
-                    |result| cosmic::Action::App(Message::BatchSuggestionsReady(result)),
-                );
-            }
-
-            Message::BatchSuggestionsReady(result) => {
-                self.ai_batch_processing = false;
-                match result {
-                    Ok(suggestions) => {
-                        for (uid, suggestion) in suggestions {
-                            if !suggestion.action_needed || suggestion.is_duplicate == Some(true) {
-                                self.email_suggestions.insert(uid, EmailSuggestionState::NoAction);
-                            } else {
-                                self.email_suggestions
-                                    .insert(uid, EmailSuggestionState::Suggested(suggestion));
-                            }
-                        }
+                    // Attach full email content as note
+                    let mut note = format!("From: {}\n", email.from);
+                    if let Some(date) = email.date {
+                        note.push_str(&format!(
+                            "Date: {}\n",
+                            date.format("%Y-%m-%d %H:%M")
+                        ));
                     }
-                    Err(e) => {
-                        log::error!("Batch AI suggestion failed: {}", e);
+                    if !email.body_full.is_empty() {
+                        note.push('\n');
+                        note.push_str(&email.body_full);
                     }
-                }
-            }
+                    task.notes = note;
 
-            Message::ApproveSuggestion(uid) => {
-                if let Some(EmailSuggestionState::Suggested(suggestion)) =
-                    self.email_suggestions.remove(&uid)
-                {
-                    let title = suggestion
-                        .title
-                        .unwrap_or_else(|| "Untitled task".to_string());
-                    let mut task = Task::new(&title);
-
-                    // Priority
-                    if let Some(ref p) = suggestion.priority {
-                        task.priority = Priority::from_org(p);
-                    }
-
-                    // Contexts — only accept ones in our configured list
-                    if let Some(ref ctxs) = suggestion.contexts {
-                        task.contexts = ctxs
-                            .iter()
-                            .filter(|c| self.config.contexts.contains(c))
-                            .cloned()
-                            .collect();
-                    }
-
-                    // Deadline
-                    if let Some(ref d) = suggestion.deadline {
-                        task.deadline = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
-                    }
-
-                    // Scheduled
-                    if let Some(ref s) = suggestion.scheduled {
-                        task.scheduled = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
-                    }
-
-                    // Full email body as note
-                    if let Some(email) = self.imap_emails.iter().find(|e| e.uid == uid) {
-                        let mut note = format!("From: {}\n", email.from);
-                        if let Some(date) = email.date {
-                            note.push_str(&format!(
-                                "Date: {}\n",
-                                date.format("%Y-%m-%d %H:%M")
-                            ));
-                        }
-                        if !email.body_full.is_empty() {
-                            note.push('\n');
-                            note.push_str(&email.body_full);
-                        }
-                        task.notes = note;
-                    }
-
-                    // Project assignment
-                    if let Some(ref proj_name) = suggestion.project {
-                        if let Some(project) =
-                            self.projects.iter_mut().find(|p| p.name == *proj_name)
-                        {
-                            task.project = Some(proj_name.clone());
-                            task.state = TaskState::Next;
-                            project.tasks.push(task);
-                            self.save_projects();
-                        } else {
-                            self.inbox_tasks.push(task);
-                            self.save_inbox();
-                        }
-                    } else {
-                        self.inbox_tasks.push(task);
-                        self.save_inbox();
-                    }
-
+                    self.inbox_tasks.push(task);
+                    self.save_inbox();
                     self.rebuild_cache();
+
+                    // Auto-archive the email after creating the task
                     return self.update(Message::ArchiveEmail(uid));
                 }
-            }
-
-            Message::DismissSuggestion(uid) => {
-                self.email_suggestions.insert(uid, EmailSuggestionState::Dismissed);
-            }
-
-            Message::SetAnthropicApiKey(key) => {
-                self.anthropic_api_key_input = key;
-            }
-
-            Message::TestAnthropicApiKey => {
-                let key = self.anthropic_api_key_input.clone();
-                if key.is_empty() {
-                    self.anthropic_test_status = Some(Err("No API key entered".to_string()));
-                    return CosmicTask::none();
-                }
-                self.anthropic_test_status = None;
-                return CosmicTask::perform(
-                    async move {
-                        // Store the key first
-                        crate::sync::anthropic::store_api_key(&key).await?;
-                        // Verify with a minimal API call
-                        crate::sync::anthropic::test_api_key(&key).await
-                    },
-                    |result| cosmic::Action::App(Message::AnthropicKeyTested(result)),
-                );
-            }
-
-            Message::AnthropicKeyTested(result) => {
-                self.anthropic_test_status = Some(result);
             }
 
             Message::ArchiveEmail(uid) => {
@@ -2257,7 +2234,6 @@ impl Application for Lamp {
                     Ok(uid) => {
                         self.imap_emails.retain(|e| e.uid != uid);
                         self.archived_email_uids.insert(uid);
-                        self.email_suggestions.remove(&uid);
                     }
                     Err(e) => {
                         log::error!("Failed to archive email: {}", e);
@@ -2572,14 +2548,26 @@ impl Application for Lamp {
 
         // Sync button (only if sync is configured)
         if self.config.sync_ready() {
-            let sync_icon = match self.sync_status {
-                SyncStatus::Syncing => "emblem-synchronizing-symbolic",
-                SyncStatus::Error(_) => "dialog-warning-symbolic",
-                _ => "emblem-synchronizing-symbolic",
-            };
-            let sync_btn = button::icon(icon::from_name(sync_icon))
-                .on_press(Message::SyncNow);
-            header_row = header_row.push(sync_btn);
+            match self.sync_status {
+                SyncStatus::Syncing => {
+                    const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠇"];
+                    header_row = header_row.push(
+                        text::body(SPINNER[self.sync_anim_frame]),
+                    );
+                }
+                SyncStatus::Error(_) => {
+                    header_row = header_row.push(
+                        button::icon(icon::from_name("dialog-warning-symbolic"))
+                            .on_press(Message::SyncNow),
+                    );
+                }
+                _ => {
+                    header_row = header_row.push(
+                        button::icon(icon::from_name("emblem-synchronizing-symbolic"))
+                            .on_press(Message::SyncNow),
+                    );
+                }
+            }
         }
 
         header_row = header_row.push(
@@ -2616,7 +2604,7 @@ impl Application for Lamp {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
-        cosmic::iced::event::listen_with(|event, _status, _id| {
+        let keyboard = cosmic::iced::event::listen_with(|event, _status, _id| {
             match event {
                 cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
                     key: cosmic::iced::keyboard::Key::Character(ref c),
@@ -2627,7 +2615,29 @@ impl Application for Lamp {
                 }
                 _ => None,
             }
-        })
+        });
+
+        let syncing = self.sync_status == SyncStatus::Syncing;
+        let has_timer = self.active_timer.is_some();
+
+        if has_timer || syncing {
+            let mut subs = vec![keyboard];
+            if has_timer {
+                subs.push(
+                    cosmic::iced::time::every(std::time::Duration::from_secs(1))
+                        .map(|_| Message::TimerTick),
+                );
+            }
+            if syncing {
+                subs.push(
+                    cosmic::iced::time::every(std::time::Duration::from_millis(150))
+                        .map(|_| Message::SyncAnimTick),
+                );
+            }
+            cosmic::iced::Subscription::batch(subs)
+        } else {
+            keyboard
+        }
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -2950,8 +2960,6 @@ impl Lamp {
                         &self.imap_emails,
                         &self.inbox_input,
                         &row_ctx,
-                        &self.email_suggestions,
-                        self.ai_batch_processing,
                     )
                 }
                 WhatPage::AllTasks => {
@@ -3075,6 +3083,12 @@ impl Lamp {
                         &self.shopping_items,
                     )
                 }
+                WhatPage::Archive => {
+                    pages::archive::archive_view(
+                        &self.archive_tasks,
+                        &self.archive_search,
+                    )
+                }
                 WhatPage::Settings => {
                     pages::settings::settings_view(
                         &self.config,
@@ -3082,8 +3096,6 @@ impl Lamp {
                         &self.service_passwords,
                         &self.service_test_status,
                         &self.discovered_calendars,
-                        &self.anthropic_api_key_input,
-                        &self.anthropic_test_status,
                         &self.sync_status,
                     )
                 }
@@ -3123,6 +3135,7 @@ impl Lamp {
             &self.shopping_items,
             self.expanded_task,
             &self.note_inputs,
+            self.active_timer,
         )
     }
 

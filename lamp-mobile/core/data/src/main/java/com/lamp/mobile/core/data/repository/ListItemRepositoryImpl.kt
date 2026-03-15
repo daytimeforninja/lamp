@@ -27,4 +27,7 @@ class ListItemRepositoryImpl @Inject constructor(
 
     override suspend fun delete(id: UUID) =
         listItemDao.deleteById(id.toString())
+
+    override suspend fun getByKind(kind: ListKind): List<ListItem> =
+        listItemDao.getByKind(kind.name).map { it.toDomain() }
 }

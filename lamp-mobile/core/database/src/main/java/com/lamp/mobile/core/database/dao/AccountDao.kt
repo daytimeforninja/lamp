@@ -17,4 +17,7 @@ interface AccountDao {
 
     @Query("DELETE FROM accounts WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("SELECT * FROM accounts")
+    suspend fun getAll(): List<AccountEntity>
 }

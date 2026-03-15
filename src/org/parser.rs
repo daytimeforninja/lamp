@@ -35,6 +35,13 @@ static LOGBOOK_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+static CLOCK_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"CLOCK:\s+\[(?P<start>\d{4}-\d{2}-\d{2}\s+\w+\s+\d{2}:\d{2})\]--\[(?P<end>\d{4}-\d{2}-\d{2}\s+\w+\s+\d{2}:\d{2})\]",
+    )
+    .unwrap()
+});
+
 pub struct OrgParser;
 
 /// A parsed org heading with all its metadata.
@@ -53,6 +60,7 @@ pub struct ParsedHeading {
     pub recurrence: Option<Recurrence>,
     pub properties: Vec<(String, String)>,
     pub logbook_entries: Vec<NaiveDateTime>,
+    pub clock_entries: Vec<(NaiveDateTime, NaiveDateTime)>,
     pub notes: String,
 }
 
@@ -148,10 +156,19 @@ impl OrgParser {
 
                 // Parse LOGBOOK
                 let mut logbook_entries = Vec::new();
+                let mut clock_entries = Vec::new();
                 if i < lines.len() && lines[i].trim() == ":LOGBOOK:" {
                     i += 1;
                     while i < lines.len() && lines[i].trim() != ":END:" {
-                        if let Some(caps) = LOGBOOK_ENTRY_RE.captures(lines[i]) {
+                        if let Some(caps) = CLOCK_ENTRY_RE.captures(lines[i]) {
+                            let fmt = "%Y-%m-%d %a %H:%M";
+                            if let (Ok(start), Ok(end)) = (
+                                NaiveDateTime::parse_from_str(&caps["start"], fmt),
+                                NaiveDateTime::parse_from_str(&caps["end"], fmt),
+                            ) {
+                                clock_entries.push((start, end));
+                            }
+                        } else if let Some(caps) = LOGBOOK_ENTRY_RE.captures(lines[i]) {
                             if let Ok(dt) = NaiveDateTime::parse_from_str(
                                 &caps["datetime"],
                                 "%Y-%m-%d %a %H:%M",
@@ -194,6 +211,7 @@ impl OrgParser {
                     recurrence,
                     properties,
                     logbook_entries,
+                    clock_entries,
                     notes,
                 });
             } else {
@@ -298,6 +316,7 @@ pub fn heading_to_task(heading: &ParsedHeading) -> Task {
         scheduled_time: heading.scheduled_time.clone(),
         deadline_time: heading.deadline_time.clone(),
         logbook_entries: heading.logbook_entries.clone(),
+        clock_entries: heading.clock_entries.clone(),
         dayplan_date: None,
         sync_href,
         sync_hash,

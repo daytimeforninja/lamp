@@ -10,4 +10,5 @@ interface ListItemRepository {
     suspend fun getById(id: UUID): ListItem?
     suspend fun save(item: ListItem)
     suspend fun delete(id: UUID)
+    suspend fun getByKind(kind: ListKind): List<ListItem>
 }

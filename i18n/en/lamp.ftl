@@ -223,20 +223,13 @@ sync-imap = Email Inbox (IMAP)
 sync-imap-host = IMAP Host
 sync-imap-folder = Folder
 email-archive = Archive
-email-suggest-tasks = Suggest Tasks
-email-analyzing = Analyzing emails...
-email-suggested-task = Suggested task
-email-approve = Approve
-email-dismiss = Dismiss
-email-no-action = No action needed
+email-create-task = Create Task
 inbox-emails = Emails
 
 # Settings
 settings-title = Settings
 settings-debug-logging = Debug logging
 settings-browser = Browser Command
-settings-ai = AI Task Extraction
-settings-ai-api-key = Anthropic API Key
 
 # Search
 search-placeholder = Search...
@@ -256,6 +249,8 @@ contacts-signal = Signal
 contacts-website = Website
 contacts-preferred-label = Preferred
 contacts-category = Category
+contacts-groups = Groups
+contacts-groups-placeholder = Personal, Family, Work...
 contacts-email-placeholder = email@example.com
 contacts-phone-placeholder = +1-555-0000
 contacts-url-placeholder = https://...
@@ -302,6 +297,12 @@ list-bought = Bought
 # Validation
 validation-invalid-date = Invalid date (use YYYY-MM-DD)
 validation-invalid-time = Invalid time (use HH:MM)
+
+# Archive
+nav-archive = Archive
+archive-empty = No archived tasks yet.
+archive-no-results = No archived tasks match your search.
+archive-count-suffix = archived tasks
 
 # Navigation (additional)
 nav-agenda = Agenda

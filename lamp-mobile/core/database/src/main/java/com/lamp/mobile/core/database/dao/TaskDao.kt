@@ -27,6 +27,9 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND state = 'SOMEDAY' ORDER BY created DESC")
     fun observeSomeday(): Flow<List<TaskEntity>>
 
+    @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND (state = 'DONE' OR state = 'CANCELLED') ORDER BY completed DESC")
+    fun observeArchived(): Flow<List<TaskEntity>>
+
     @Query("SELECT * FROM tasks WHERE syncDeleted = 0 AND project = :projectName ORDER BY created DESC")
     fun observeByProject(projectName: String): Flow<List<TaskEntity>>
 

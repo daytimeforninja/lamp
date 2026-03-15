@@ -1,10 +1,7 @@
-use std::collections::HashMap;
-
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{button, column, container, row, scrollable, text, text_input};
 use cosmic::Element;
 
-use crate::application::EmailSuggestionState;
 use crate::components::task_row::{TaskRowCtx, task_grid};
 use crate::core::task::{Task, TaskState};
 use crate::fl;
@@ -27,8 +24,6 @@ pub fn inbox_view<'a>(
     imap_emails: &[ImapEmail],
     input_value: &str,
     ctx: &TaskRowCtx,
-    email_suggestions: &HashMap<u32, EmailSuggestionState>,
-    ai_batch_processing: bool,
 ) -> Element<'a, Message> {
     let placeholder = fl!("inbox-placeholder");
     let input = text_input::text_input(placeholder, input_value.to_string())
@@ -52,20 +47,7 @@ pub fn inbox_view<'a>(
         }
 
         if !imap_emails.is_empty() {
-            // Header row with title and Suggest Tasks button
-            let mut header_row = row().spacing(8).align_y(Alignment::Center);
-            header_row = header_row.push(text::title4(fl!("inbox-emails")).width(Length::Fill));
-
-            if ai_batch_processing {
-                header_row = header_row.push(text::caption(fl!("email-analyzing")));
-            } else {
-                header_row = header_row.push(
-                    button::standard(fl!("email-suggest-tasks"))
-                        .on_press(Message::SuggestEmailTasks),
-                );
-            }
-
-            content = content.push(header_row);
+            content = content.push(text::title4(fl!("inbox-emails")));
 
             for email in imap_emails {
                 let uid = email.uid;
@@ -82,67 +64,19 @@ pub fn inbox_view<'a>(
                 info_col = info_col.push(text::caption(secondary));
                 info_row = info_row.push(info_col.width(Length::Fill));
 
-                // Archive button always present
+                // Create Task button
+                info_row = info_row.push(
+                    button::suggested(fl!("email-create-task"))
+                        .on_press(Message::CreateTaskFromEmail(uid)),
+                );
+
+                // Archive button
                 info_row = info_row.push(
                     button::standard(fl!("email-archive"))
                         .on_press(Message::ArchiveEmail(uid)),
                 );
 
                 email_col = email_col.push(info_row);
-
-                // Suggestion card
-                match email_suggestions.get(&uid) {
-                    Some(EmailSuggestionState::Suggested(s)) => {
-                        let title = s.title.clone().unwrap_or_default();
-                        let mut suggestion_row = row().spacing(8).align_y(Alignment::Center);
-                        let mut detail_col = column().spacing(2);
-                        detail_col =
-                            detail_col.push(text::caption(fl!("email-suggested-task")));
-                        detail_col = detail_col.push(text::body(title));
-
-                        // Show metadata summary
-                        let mut meta_parts: Vec<String> = Vec::new();
-                        if let Some(ref p) = s.priority {
-                            meta_parts.push(format!("[#{}]", p));
-                        }
-                        if let Some(ref ctxs) = s.contexts {
-                            if !ctxs.is_empty() {
-                                meta_parts.push(ctxs.join(", "));
-                            }
-                        }
-                        if let Some(ref proj) = s.project {
-                            meta_parts.push(format!("→ {}", proj));
-                        }
-                        if let Some(ref d) = s.deadline {
-                            meta_parts.push(format!("due {}", d));
-                        }
-                        if !meta_parts.is_empty() {
-                            detail_col =
-                                detail_col.push(text::caption(meta_parts.join("  ")));
-                        }
-
-                        suggestion_row =
-                            suggestion_row.push(detail_col.width(Length::Fill));
-                        suggestion_row = suggestion_row.push(
-                            button::suggested(fl!("email-approve"))
-                                .on_press(Message::ApproveSuggestion(uid)),
-                        );
-                        suggestion_row = suggestion_row.push(
-                            button::standard(fl!("email-dismiss"))
-                                .on_press(Message::DismissSuggestion(uid)),
-                        );
-
-                        email_col = email_col.push(suggestion_row);
-                    }
-                    Some(EmailSuggestionState::NoAction) => {
-                        email_col = email_col
-                            .push(text::caption(fl!("email-no-action")));
-                    }
-                    Some(EmailSuggestionState::Dismissed) | None => {
-                        // No suggestion card shown
-                    }
-                }
-
                 content = content.push(email_col);
             }
         }

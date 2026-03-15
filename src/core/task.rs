@@ -99,6 +99,8 @@ pub struct Task {
     pub deadline_time: Option<String>,
     /// Logbook state-change entries (timestamps of DONE transitions).
     pub logbook_entries: Vec<NaiveDateTime>,
+    /// Clock entries: completed work sessions (start, end).
+    pub clock_entries: Vec<(NaiveDateTime, NaiveDateTime)>,
     /// Date this task was added to the day plan (synced via X-LAMP-DAYPLAN).
     pub dayplan_date: Option<NaiveDate>,
     pub sync_href: Option<String>,
@@ -132,6 +134,7 @@ impl Task {
             scheduled_time: None,
             deadline_time: None,
             logbook_entries: Vec::new(),
+            clock_entries: Vec::new(),
             dayplan_date: None,
             sync_href: None,
             sync_hash: None,
@@ -173,6 +176,14 @@ impl Task {
 
     pub fn has_context(&self, ctx: &str) -> bool {
         self.contexts.iter().any(|c| c == ctx)
+    }
+
+    /// Total tracked work time in seconds.
+    pub fn total_work_secs(&self) -> i64 {
+        self.clock_entries
+            .iter()
+            .map(|(start, end)| (*end - *start).num_seconds().max(0))
+            .sum()
     }
 }
 

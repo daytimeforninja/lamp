@@ -4,6 +4,7 @@ import com.lamp.mobile.core.data.credential.CredentialStore
 import com.lamp.mobile.core.data.repository.*
 import java.time.LocalDate
 import com.lamp.mobile.core.model.Habit
+import com.lamp.mobile.core.model.ListKind
 import com.lamp.mobile.core.model.Project
 import com.lamp.mobile.core.model.SyncConflict
 import com.lamp.mobile.core.model.SyncMetadata
@@ -13,10 +14,18 @@ import com.lamp.mobile.core.network.caldav.PutCondition
 import com.lamp.mobile.core.network.caldav.SyncChange
 import com.lamp.mobile.core.network.caldav.SyncTokenExpiredException
 import com.lamp.mobile.core.network.carddav.CardDavClient
+import com.lamp.mobile.core.network.imap.ImapClient
+import com.lamp.mobile.core.network.imap.ImapEmail
 import com.lamp.mobile.core.network.ical.VtodoConverter
 import com.lamp.mobile.core.network.ical.VeventConverter
+import com.lamp.mobile.core.network.org.OrgSerializer
 import com.lamp.mobile.core.network.webdav.WebDavClient
+import android.content.Context
 import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,8 +50,15 @@ class SyncEngine @Inject constructor(
     private val calendarEventRepo: CalendarEventRepository,
     private val contactRepo: ContactRepository,
     private val noteRepo: NoteRepository,
+    private val listItemRepo: ListItemRepository,
+    private val accountRepo: AccountRepository,
     private val syncMetadataRepo: SyncMetadataRepository,
+    @ApplicationContext private val context: Context,
 ) {
+    private val _imapEmails = MutableStateFlow<List<ImapEmail>>(emptyList())
+    val imapEmails: StateFlow<List<ImapEmail>> = _imapEmails.asStateFlow()
+
+    private val archivedUids = mutableSetOf<Long>()
     suspend fun syncAll(): SyncResult {
         val errors = mutableListOf<String>()
         val conflicts = mutableListOf<SyncConflict>()
@@ -81,12 +97,26 @@ class SyncEngine @Inject constructor(
             }
         }
 
-        // Sync WebDAV notes
+        // Sync WebDAV notes + shopping + accounts
         if (credentialStore.hasCredentials("notes")) {
             try {
                 notesSynced = syncNotes()
             } catch (e: Exception) {
                 errors.add("Notes sync: ${e.message}")
+            }
+            try {
+                syncShoppingAndAccounts()
+            } catch (e: Exception) {
+                errors.add("Shopping/accounts sync: ${e.message}")
+            }
+        }
+
+        // Fetch IMAP emails
+        if (credentialStore.hasCredentials("imap")) {
+            try {
+                fetchImapEmails()
+            } catch (e: Exception) {
+                errors.add("IMAP: ${e.message}")
             }
         }
 
@@ -247,20 +277,23 @@ class SyncEngine @Inject constructor(
         }
         Log.d("LampSync", "reconstructHabits: ${allTasks.size} tasks, ${habitTasks.size} habits")
         for (task in habitTasks) {
-            val existing = habitRepo.getByTaskId(task.id)
-            if (existing == null) {
-                Log.d("LampSync", "Creating habit for: ${task.title}")
-                val habit = Habit(task = task, completions = task.logbookEntries)
-                    .recalculateStreak(java.time.LocalDate.now())
-                habitRepo.saveHabitOnly(habit)
-            } else if (task.logbookEntries.isNotEmpty() && existing.completions != task.logbookEntries) {
-                // Merge completions from both sides (local + remote may have different entries)
-                Log.d("LampSync", "Merging habit completions for: ${task.title}")
-                val combined = (existing.completions + task.logbookEntries).distinct().sorted()
-                val updated = existing.copy(task = task, completions = combined)
-                    .recalculateStreak(java.time.LocalDate.now())
-                habitRepo.saveHabitOnly(updated)
-            }
+            // Ensure habit tasks have location = "habits" (sync may have reset to "inbox")
+            habitRepo.save(
+                habitRepo.getByTaskId(task.id)?.let { existing ->
+                    if (task.logbookEntries.isNotEmpty() && existing.completions != task.logbookEntries) {
+                        Log.d("LampSync", "Merging habit completions for: ${task.title}")
+                        val combined = (existing.completions + task.logbookEntries).distinct().sorted()
+                        existing.copy(task = task, completions = combined)
+                            .recalculateStreak(java.time.LocalDate.now())
+                    } else {
+                        existing.copy(task = task)
+                    }
+                } ?: run {
+                    Log.d("LampSync", "Creating habit for: ${task.title}")
+                    Habit(task = task, completions = task.logbookEntries)
+                        .recalculateStreak(java.time.LocalDate.now())
+                }
+            )
         }
     }
 
@@ -425,5 +458,123 @@ class SyncEngine @Inject constructor(
         } finally {
             client.close()
         }
+    }
+
+    private suspend fun syncShoppingAndAccounts() {
+        val url = credentialStore.getServerUrl("notes")!!
+        val user = credentialStore.getUsername("notes")!!
+        val pass = credentialStore.getPassword("notes")!!
+        val client = WebDavClient(url, user, pass)
+
+        try {
+            client.ensureCollection().getOrThrow()
+
+            // Sync shopping items
+            val localShopping = listItemRepo.getByKind(ListKind.SHOPPING)
+            val remoteShopping = try {
+                val (content, _) = client.getFile("shopping.org").getOrThrow()
+                OrgSerializer.parseShoppingItems(content)
+            } catch (_: Exception) { emptyList() }
+
+            // Merge: remote wins for matching UUIDs, keep local-only items
+            val remoteIds = remoteShopping.map { it.id }.toSet()
+            val merged = remoteShopping.toMutableList()
+            for (item in localShopping) {
+                if (item.id !in remoteIds) {
+                    merged.add(item)
+                }
+            }
+
+            // Save merged items locally
+            val existingIds = localShopping.map { it.id }.toSet()
+            for (item in merged) {
+                listItemRepo.save(item)
+            }
+            // Remove local items that were deleted remotely
+            val mergedIds = merged.map { it.id }.toSet()
+            for (item in localShopping) {
+                if (item.id !in mergedIds) {
+                    listItemRepo.delete(item.id)
+                }
+            }
+
+            // Push merged back to remote
+            val mergedContent = OrgSerializer.writeShoppingFile(merged)
+            client.putFile("shopping.org", mergedContent).getOrNull()
+
+            Log.i("SyncEngine", "Shopping sync: ${remoteShopping.size} remote, ${merged.size} merged")
+
+            // Sync accounts
+            val localAccounts = accountRepo.getAll()
+            val remoteAccounts = try {
+                val (content, _) = client.getFile("accounts.org").getOrThrow()
+                OrgSerializer.parseAccounts(content)
+            } catch (_: Exception) { emptyList() }
+
+            val remoteAccountIds = remoteAccounts.map { it.id }.toSet()
+            val mergedAccounts = remoteAccounts.toMutableList()
+            for (account in localAccounts) {
+                if (account.id !in remoteAccountIds) {
+                    mergedAccounts.add(account)
+                }
+            }
+
+            for (account in mergedAccounts) {
+                accountRepo.save(account)
+            }
+            val mergedAccountIds = mergedAccounts.map { it.id }.toSet()
+            for (account in localAccounts) {
+                if (account.id !in mergedAccountIds) {
+                    accountRepo.delete(account.id)
+                }
+            }
+
+            val mergedAccountsContent = OrgSerializer.writeAccountsFile(mergedAccounts)
+            client.putFile("accounts.org", mergedAccountsContent).getOrNull()
+
+            Log.i("SyncEngine", "Accounts sync: ${remoteAccounts.size} remote, ${mergedAccounts.size} merged")
+        } finally {
+            client.close()
+        }
+    }
+
+    private suspend fun fetchImapEmails() {
+        val host = credentialStore.getServerUrl("imap") ?: return
+        val username = credentialStore.getUsername("imap") ?: return
+        val password = credentialStore.getPassword("imap") ?: return
+        val prefs = context.getSharedPreferences("lamp_settings", Context.MODE_PRIVATE)
+        val folder = prefs.getString("imap_folder", null)?.ifBlank { "INBOX" } ?: "INBOX"
+
+        val client = ImapClient(host, username, password)
+        val emails = client.fetchEmails(folder).getOrThrow()
+        _imapEmails.value = emails.filter { it.uid !in archivedUids }
+        Log.i("SyncEngine", "IMAP: fetched ${emails.size} emails from $folder")
+    }
+
+    suspend fun createTaskFromEmail(email: ImapEmail) {
+        val note = buildString {
+            appendLine("From: ${email.from}")
+            email.date?.let { appendLine("Date: $it") }
+            if (email.bodyFull.isNotEmpty()) {
+                appendLine()
+                append(email.bodyFull)
+            }
+        }
+        val task = Task(title = email.subject, notes = note)
+        taskRepo.save(task)
+        archiveImapEmail(email.uid)
+    }
+
+    suspend fun archiveImapEmail(uid: Long) {
+        val host = credentialStore.getServerUrl("imap") ?: return
+        val username = credentialStore.getUsername("imap") ?: return
+        val password = credentialStore.getPassword("imap") ?: return
+        val prefs = context.getSharedPreferences("lamp_settings", Context.MODE_PRIVATE)
+        val folder = prefs.getString("imap_folder", null)?.ifBlank { "INBOX" } ?: "INBOX"
+
+        val client = ImapClient(host, username, password)
+        client.archiveEmail(folder, uid).getOrThrow()
+        archivedUids.add(uid)
+        _imapEmails.value = _imapEmails.value.filter { it.uid != uid }
     }
 }

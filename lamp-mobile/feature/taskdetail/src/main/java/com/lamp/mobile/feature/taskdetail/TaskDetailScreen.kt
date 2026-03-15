@@ -263,7 +263,7 @@ fun TaskDetailScreen(
                     modifier = Modifier.weight(1f),
                     minLines = 2,
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
                 FilledIconButton(onClick = { viewModel.onIntent(TaskDetailIntent.AppendNote) }) {
                     Icon(Icons.Filled.Send, "Append")
                 }

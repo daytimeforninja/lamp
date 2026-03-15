@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod all_tasks;
+pub mod archive;
 pub mod conflicts;
 pub mod contacts;
 pub mod daily_planning;

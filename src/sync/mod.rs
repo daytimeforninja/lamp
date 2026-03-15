@@ -1,4 +1,3 @@
-pub mod anthropic;
 pub mod caldav;
 pub mod carddav;
 pub mod ical;
@@ -31,6 +30,13 @@ fn merge_local_fields(pulled: &mut Task, local: &Task) {
         combined.extend(local.logbook_entries.iter().copied());
         pulled.logbook_entries = combined.into_iter().collect();
         pulled.logbook_entries.sort();
+    }
+    // Union clock entries from both sides
+    if !local.clock_entries.is_empty() {
+        let mut combined: HashSet<_> = pulled.clock_entries.drain(..).collect();
+        combined.extend(local.clock_entries.iter().copied());
+        pulled.clock_entries = combined.into_iter().collect();
+        pulled.clock_entries.sort();
     }
 }
 

@@ -26,6 +26,7 @@ import com.lamp.mobile.feature.taskdetail.TaskDetailScreen
 import com.lamp.mobile.feature.alltasks.AllTasksScreen
 import com.lamp.mobile.feature.agenda.AgendaScreen
 import com.lamp.mobile.feature.accounts.AccountsScreen
+import com.lamp.mobile.feature.archive.ArchiveScreen
 
 @Composable
 fun LampNavHost(
@@ -79,6 +80,9 @@ fun LampNavHost(
             AgendaScreen(onNavigateToTaskDetail = navigateToTaskDetail)
         }
         composable(DrawerDestination.ACCOUNTS.route) { AccountsScreen() }
+        composable(DrawerDestination.ARCHIVE.route) {
+            ArchiveScreen(onNavigateToTaskDetail = navigateToTaskDetail)
+        }
 
         // Task detail route
         composable(

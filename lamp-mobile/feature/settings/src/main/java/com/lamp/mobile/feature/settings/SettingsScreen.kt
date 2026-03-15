@@ -83,6 +83,18 @@ fun SettingsScreen(
             testResult = state.testResult?.takeIf { it.service == "notes" },
         )
 
+        // IMAP
+        ImapServiceSection(
+            state = state,
+            onHostChange = { viewModel.onIntent(SettingsIntent.SetImapHost(it)) },
+            onUsernameChange = { viewModel.onIntent(SettingsIntent.SetImapUsername(it)) },
+            onPasswordChange = { viewModel.onIntent(SettingsIntent.SetImapPassword(it)) },
+            onFolderChange = { viewModel.onIntent(SettingsIntent.SetImapFolder(it)) },
+            onTest = { viewModel.onIntent(SettingsIntent.TestConnection("imap")) },
+            isTesting = state.testingService == "imap",
+            testResult = state.testResult?.takeIf { it.service == "imap" },
+        )
+
         Button(
             onClick = { viewModel.onIntent(SettingsIntent.SaveCredentials) },
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -143,6 +155,76 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun ImapServiceSection(
+    state: SettingsUiState,
+    onHostChange: (String) -> Unit,
+    onUsernameChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onFolderChange: (String) -> Unit,
+    onTest: () -> Unit,
+    isTesting: Boolean,
+    testResult: ConnectionTestResult?,
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text("IMAP (Email Inbox)", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = state.imapHost, onValueChange = onHostChange,
+            label = { Text("IMAP Host") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = state.imapUsername, onValueChange = onUsernameChange,
+            label = { Text("Username") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = state.imapPassword, onValueChange = onPasswordChange,
+            label = { Text("Password") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = state.imapFolder, onValueChange = onFolderChange,
+            label = { Text("Folder (e.g. INBOX.flup)") },
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onTest,
+            enabled = !isTesting && state.imapHost.isNotBlank(),
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            if (isTesting) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Testing...")
+            } else {
+                Text("Test Connection")
+            }
+        }
+        if (testResult != null) {
+            Spacer(Modifier.height(8.dp))
+            val containerColor = if (testResult.success) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.errorContainer
+            val contentColor = if (testResult.success) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onErrorContainer
+            Card(colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor),
+                modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (testResult.success) Icons.Filled.CheckCircle else Icons.Filled.Error, null, Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text(testResult.detail, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
     }
 }
 

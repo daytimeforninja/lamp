@@ -142,6 +142,16 @@ pub fn task_to_vcalendar(task: &Task) -> String {
         lines.push(format!("X-LAMP-LOGBOOK:{}", entries.join(",")));
     }
 
+    // X-LAMP-CLOCK (work timer sessions: start/end pairs)
+    if !task.clock_entries.is_empty() {
+        let entries: Vec<String> = task
+            .clock_entries
+            .iter()
+            .map(|(s, e)| format!("{}/{}", format_datetime(*s), format_datetime(*e)))
+            .collect();
+        lines.push(format!("X-LAMP-CLOCK:{}", entries.join(",")));
+    }
+
     lines.push("END:VTODO".to_string());
     lines.push("END:VCALENDAR".to_string());
 
@@ -175,6 +185,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
     let mut lamp_follow_up: Option<NaiveDate> = None;
     let mut lamp_recurrence: Option<String> = None;
     let mut lamp_logbook: Option<String> = None;
+    let mut lamp_clock: Option<String> = None;
     let mut lamp_tags: Option<String> = None;
     let mut lamp_dayplan: Option<NaiveDate> = None;
 
@@ -219,6 +230,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
                 "X-LAMP-FOLLOW-UP" => lamp_follow_up = parse_ical_date(value),
                 "X-LAMP-RECURRENCE" => lamp_recurrence = Some(value.to_string()),
                 "X-LAMP-LOGBOOK" => lamp_logbook = Some(value.to_string()),
+                "X-LAMP-CLOCK" => lamp_clock = Some(value.to_string()),
                 "X-LAMP-TAGS" => lamp_tags = Some(value.to_string()),
                 "X-LAMP-DAYPLAN" => lamp_dayplan = parse_ical_date(value),
                 _ => {}
@@ -283,6 +295,22 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
                     .collect()
             })
             .unwrap_or_default(),
+        clock_entries: lamp_clock
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|pair| {
+                        let parts: Vec<&str> = pair.trim().splitn(2, '/').collect();
+                        if parts.len() == 2 {
+                            let start = parse_ical_datetime(parts[0])?;
+                            let end = parse_ical_datetime(parts[1])?;
+                            Some((start, end))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         sync_href: None,
         sync_hash: None,
         sync_uid: uid_raw,
@@ -312,6 +340,10 @@ pub fn task_content_hash(task: &Task) -> u64 {
     task.extra_tags.hash(&mut hasher);
     for entry in &task.logbook_entries {
         entry.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
+    }
+    for (start, end) in &task.clock_entries {
+        start.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
+        end.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
     }
     hasher.finish()
 }

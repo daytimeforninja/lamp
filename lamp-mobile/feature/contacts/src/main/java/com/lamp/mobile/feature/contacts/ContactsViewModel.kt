@@ -4,7 +4,6 @@ import androidx.lifecycle.viewModelScope
 import com.lamp.mobile.core.common.MviViewModel
 import com.lamp.mobile.core.data.repository.ContactRepository
 import com.lamp.mobile.core.model.Contact
-import com.lamp.mobile.core.model.ContactCategory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -19,7 +18,7 @@ data class ContactEditForm(
     val website: String = "",
     val signal: String = "",
     val preferredMethod: String = "",
-    val category: ContactCategory = ContactCategory.PERSONAL,
+    val groups: String = "Personal",
 )
 
 data class ContactsUiState(
@@ -40,7 +39,6 @@ sealed class ContactsIntent {
     data object ConfirmDelete : ContactsIntent()
     data object DismissDelete : ContactsIntent()
     data class MarkContacted(val contactId: UUID) : ContactsIntent()
-    data class SetCategory(val contactId: UUID, val category: ContactCategory) : ContactsIntent()
     data class SetField(val field: String, val value: String) : ContactsIntent()
     data object SaveEdit : ContactsIntent()
     data object CancelEdit : ContactsIntent()
@@ -83,7 +81,7 @@ class ContactsViewModel @Inject constructor(
                             website = c.website ?: "",
                             signal = c.signal ?: "",
                             preferredMethod = c.preferredMethod ?: "",
-                            category = c.category,
+                            groups = c.groups.joinToString(", "),
                         ),
                     )
                 }
@@ -96,9 +94,7 @@ class ContactsViewModel @Inject constructor(
                     "website" -> editForm.copy(website = intent.value)
                     "signal" -> editForm.copy(signal = intent.value)
                     "preferred" -> editForm.copy(preferredMethod = intent.value)
-                    "category" -> editForm.copy(
-                        category = ContactCategory.fromString(intent.value)
-                    )
+                    "groups" -> editForm.copy(groups = intent.value)
                     else -> editForm
                 })
             }
@@ -107,6 +103,10 @@ class ContactsViewModel @Inject constructor(
                 val c = contactRepo.getById(id) ?: return
                 val form = currentState.editForm
                 if (form.name.isBlank()) return
+                val groups = form.groups.split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .ifEmpty { listOf("Personal") }
                 contactRepo.save(c.copy(
                     name = form.name.trim(),
                     email = form.email.ifBlank { null },
@@ -114,7 +114,7 @@ class ContactsViewModel @Inject constructor(
                     website = form.website.ifBlank { null },
                     signal = form.signal.ifBlank { null },
                     preferredMethod = form.preferredMethod.ifBlank { null },
-                    category = form.category,
+                    groups = groups,
                 ))
                 updateState { copy(editingId = null) }
             }
@@ -129,10 +129,6 @@ class ContactsViewModel @Inject constructor(
             is ContactsIntent.MarkContacted -> {
                 val c = contactRepo.getById(intent.contactId) ?: return
                 contactRepo.save(c.copy(lastContacted = LocalDate.now()))
-            }
-            is ContactsIntent.SetCategory -> {
-                val c = contactRepo.getById(intent.contactId) ?: return
-                contactRepo.save(c.copy(category = intent.category))
             }
         }
     }

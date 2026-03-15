@@ -3,21 +3,6 @@ use reqwest::{Client, Method};
 use std::path::Path;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContactCategory {
-    Personal,
-    Service,
-}
-
-impl std::fmt::Display for ContactCategory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Personal => write!(f, "Personal"),
-            Self::Service => write!(f, "Service"),
-        }
-    }
-}
-
 /// A contact fetched from CardDAV (enriched with local-only fields).
 #[derive(Debug, Clone)]
 pub struct Contact {
@@ -28,7 +13,8 @@ pub struct Contact {
     pub website: Option<String>,
     pub signal: Option<String>,
     pub preferred_method: Option<String>,
-    pub category: ContactCategory,
+    /// Contact groups / categories (from vCard CATEGORIES, comma-separated).
+    pub groups: Vec<String>,
     pub last_contacted: Option<NaiveDate>,
     /// Server href for this vCard resource (used for DELETE).
     pub sync_href: Option<String>,
@@ -44,7 +30,7 @@ impl Contact {
             website: None,
             signal: None,
             preferred_method: None,
-            category: ContactCategory::Personal,
+            groups: vec!["Personal".to_string()],
             last_contacted: None,
             sync_href: None,
         }
@@ -270,7 +256,10 @@ impl CardDavClient {
         let doc = roxmltree::Document::parse(&text)
             .map_err(|e| format!("Failed to parse XML: {}", e))?;
 
+        // First pass: parse all vCards into contacts and groups
         let mut contacts = Vec::new();
+        let mut group_defs: Vec<VCardGroup> = Vec::new();
+
         for response in doc
             .descendants()
             .filter(|n| n.tag_name().name() == "response")
@@ -286,15 +275,58 @@ impl CardDavClient {
                 .filter(|n| n.tag_name().name() == "address-data")
             {
                 if let Some(vcard_text) = prop.text() {
-                    if let Some(mut contact) = parse_vcard(vcard_text) {
-                        contact.sync_href = resp_href.clone();
-                        contacts.push(contact);
+                    match parse_vcard(vcard_text) {
+                        Some(ParsedVCard::Contact { uid, mut contact }) => {
+                            contact.sync_href = resp_href.clone();
+                            contacts.push((uid, contact));
+                        }
+                        Some(ParsedVCard::Group(group)) => {
+                            group_defs.push(group);
+                        }
+                        None => {}
                     }
                 }
             }
         }
 
-        Ok(contacts)
+        // Second pass: resolve group memberships by matching UIDs
+        if !group_defs.is_empty() {
+            // Build UID → list of group names
+            let mut uid_to_groups: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for group in &group_defs {
+                for member_uid in &group.member_uids {
+                    uid_to_groups
+                        .entry(member_uid.clone())
+                        .or_default()
+                        .push(group.name.clone());
+                }
+            }
+
+            // Assign groups to contacts based on their UID
+            for (uid, contact) in &mut contacts {
+                if let Some(uid_val) = uid {
+                    if let Some(groups) = uid_to_groups.get(uid_val) {
+                        contact.groups = groups.clone();
+                    }
+                }
+            }
+
+            log::info!(
+                "Resolved {} group vCards with {} total memberships",
+                group_defs.len(),
+                uid_to_groups.len()
+            );
+        }
+
+        // Set default group for contacts without any
+        for (_, contact) in &mut contacts {
+            if contact.groups.is_empty() {
+                contact.groups.push("Personal".to_string());
+            }
+        }
+
+        Ok(contacts.into_iter().map(|(_, c)| c).collect())
     }
 
     /// Delete a vCard resource from the server.
@@ -327,15 +359,34 @@ impl CardDavClient {
     }
 }
 
-/// Parse a VCARD string to extract contact fields.
-fn parse_vcard(vcard: &str) -> Option<Contact> {
+/// A parsed group vCard (X-ADDRESSBOOKSERVER-KIND:GROUP).
+struct VCardGroup {
+    name: String,
+    /// Member UIDs (from X-ADDRESSBOOKSERVER-MEMBER:urn:uuid:<uid>).
+    member_uids: Vec<String>,
+}
+
+/// Intermediate parse result — either a regular contact or a group definition.
+enum ParsedVCard {
+    Contact {
+        uid: Option<String>,
+        contact: Contact,
+    },
+    Group(VCardGroup),
+}
+
+/// Parse a VCARD string to extract contact fields or group definition.
+fn parse_vcard(vcard: &str) -> Option<ParsedVCard> {
     let mut name: Option<String> = None;
+    let mut uid: Option<String> = None;
     let mut email: Option<String> = None;
     let mut phone: Option<String> = None;
     let mut website: Option<String> = None;
     let mut signal: Option<String> = None;
     let mut preferred_method: Option<String> = None;
-    let mut category = ContactCategory::Personal;
+    let mut groups: Vec<String> = Vec::new();
+    let mut is_group = false;
+    let mut member_uids: Vec<String> = Vec::new();
 
     // Unfold continuation lines (RFC 6350: lines starting with space/tab are continuations)
     let unfolded = super::ical::unfold_lines(vcard);
@@ -343,6 +394,9 @@ fn parse_vcard(vcard: &str) -> Option<Contact> {
         let line = line.trim();
         if let Some(value) = strip_ical_prefix(line, "FN") {
             name = Some(value.to_string());
+        }
+        if let Some(value) = strip_ical_prefix(line, "UID") {
+            uid = Some(value.to_string());
         }
         if let Some(value) = strip_ical_prefix(line, "EMAIL") {
             if email.is_none() {
@@ -366,24 +420,49 @@ fn parse_vcard(vcard: &str) -> Option<Contact> {
             preferred_method = Some(value.to_string());
         }
         if let Some(value) = strip_ical_prefix(line, "CATEGORIES") {
-            if value.eq_ignore_ascii_case("Service") {
-                category = ContactCategory::Service;
+            for cat in value.split(',') {
+                let cat = cat.trim().to_string();
+                if !cat.is_empty() && !groups.contains(&cat) {
+                    groups.push(cat);
+                }
+            }
+        }
+        // Apple/Fastmail group vCard format
+        if let Some(value) = strip_ical_prefix(line, "X-ADDRESSBOOKSERVER-KIND") {
+            if value.eq_ignore_ascii_case("GROUP") {
+                is_group = true;
+            }
+        }
+        if let Some(value) = strip_ical_prefix(line, "X-ADDRESSBOOKSERVER-MEMBER") {
+            if let Some(member_uid) = value.strip_prefix("urn:uuid:") {
+                member_uids.push(member_uid.to_string());
             }
         }
     }
 
     let name = name.filter(|n| !n.is_empty())?;
-    Some(Contact {
-        id: Uuid::new_v4(),
-        name,
-        email,
-        phone,
-        website,
-        signal,
-        preferred_method,
-        category,
-        last_contacted: None, // vCard doesn't carry this
-        sync_href: None, // set by fetch_addressbook_contacts after parsing
+
+    if is_group {
+        return Some(ParsedVCard::Group(VCardGroup {
+            name,
+            member_uids,
+        }));
+    }
+
+    Some(ParsedVCard::Contact {
+        uid,
+        contact: Contact {
+            id: Uuid::new_v4(),
+            name,
+            email,
+            phone,
+            website,
+            signal,
+            preferred_method,
+            groups,
+            last_contacted: None,
+            sync_href: None,
+        },
     })
 }
 
@@ -435,8 +514,8 @@ pub fn write_contacts_org(contacts: &[Contact]) -> String {
         if let Some(ref v) = contact.preferred_method {
             out.push_str(&format!("  :PREFERRED_METHOD: {}\n", v));
         }
-        if contact.category != ContactCategory::Personal {
-            out.push_str(&format!("  :CATEGORY: {}\n", contact.category));
+        if !contact.groups.is_empty() {
+            out.push_str(&format!("  :GROUPS: {}\n", contact.groups.join(",")));
         }
         if let Some(d) = contact.last_contacted {
             out.push_str(&format!("  :LAST_CONTACTED: [{}]\n", d.format("%Y-%m-%d")));
@@ -483,10 +562,16 @@ pub fn parse_contacts_org(input: &str) -> Vec<Contact> {
                     c.signal = Some(v.trim().to_string());
                 } else if let Some(v) = trimmed.strip_prefix(":PREFERRED_METHOD:") {
                     c.preferred_method = Some(v.trim().to_string());
+                } else if let Some(v) = trimmed.strip_prefix(":GROUPS:") {
+                    c.groups = v.trim().split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                 } else if let Some(v) = trimmed.strip_prefix(":CATEGORY:") {
+                    // Legacy: migrate old single-category format
                     let val = v.trim();
-                    if val.eq_ignore_ascii_case("Service") {
-                        c.category = ContactCategory::Service;
+                    if !val.is_empty() {
+                        c.groups = vec![val.to_string()];
                     }
                 } else if let Some(v) = trimmed.strip_prefix(":LAST_CONTACTED:") {
                     let val = v.trim().trim_start_matches('[').trim_end_matches(']');
@@ -543,8 +628,8 @@ pub fn merge_contacts(local: &mut Vec<Contact>, remote: Vec<Contact>) {
             lc.website = rc.website.or(lc.website.clone());
             lc.signal = rc.signal.or(lc.signal.clone());
             lc.preferred_method = rc.preferred_method.or(lc.preferred_method.clone());
-            if rc.category != ContactCategory::Personal {
-                lc.category = rc.category;
+            if !rc.groups.is_empty() {
+                lc.groups = rc.groups;
             }
             // preserve last_contacted (local only)
             lc.sync_href = rc.sync_href.or(lc.sync_href.clone());
@@ -589,32 +674,65 @@ fn url_origin(url: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Helper to extract a Contact from ParsedVCard in tests.
+    fn unwrap_contact(parsed: ParsedVCard) -> Contact {
+        match parsed {
+            ParsedVCard::Contact { mut contact, .. } => {
+                if contact.groups.is_empty() {
+                    contact.groups.push("Personal".to_string());
+                }
+                contact
+            }
+            ParsedVCard::Group(g) => panic!("Expected contact, got group {:?}", g.name),
+        }
+    }
+
     #[test]
     fn parse_vcard_basic() {
         let vcard = "BEGIN:VCARD\nVERSION:3.0\nFN:John Doe\nEMAIL:john@example.com\nTEL:+1-555-0123\nURL:https://johndoe.com\nEND:VCARD";
-        let contact = parse_vcard(vcard).unwrap();
+        let contact = unwrap_contact(parse_vcard(vcard).unwrap());
         assert_eq!(contact.name, "John Doe");
         assert_eq!(contact.email, Some("john@example.com".to_string()));
         assert_eq!(contact.phone, Some("+1-555-0123".to_string()));
         assert_eq!(contact.website, Some("https://johndoe.com".to_string()));
-        assert_eq!(contact.category, ContactCategory::Personal);
+        assert_eq!(contact.groups, vec!["Personal".to_string()]);
     }
 
     #[test]
     fn parse_vcard_typed_email() {
         let vcard =
             "BEGIN:VCARD\nVERSION:3.0\nFN:Jane\nEMAIL;TYPE=WORK:jane@work.com\nEND:VCARD";
-        let contact = parse_vcard(vcard).unwrap();
+        let contact = unwrap_contact(parse_vcard(vcard).unwrap());
         assert_eq!(contact.email, Some("jane@work.com".to_string()));
     }
 
     #[test]
     fn parse_vcard_extended_fields() {
         let vcard = "BEGIN:VCARD\nVERSION:3.0\nFN:Alice\nX-SIGNAL:alice.42\nX-PREFERRED-METHOD:Signal\nCATEGORIES:Service\nEND:VCARD";
-        let contact = parse_vcard(vcard).unwrap();
+        let contact = unwrap_contact(parse_vcard(vcard).unwrap());
         assert_eq!(contact.signal, Some("alice.42".to_string()));
         assert_eq!(contact.preferred_method, Some("Signal".to_string()));
-        assert_eq!(contact.category, ContactCategory::Service);
+        assert_eq!(contact.groups, vec!["Service".to_string()]);
+    }
+
+    #[test]
+    fn parse_vcard_multiple_categories() {
+        let vcard = "BEGIN:VCARD\nVERSION:3.0\nFN:Bob\nCATEGORIES:Family,Friends,Work\nEND:VCARD";
+        let contact = unwrap_contact(parse_vcard(vcard).unwrap());
+        assert_eq!(contact.groups, vec!["Family".to_string(), "Friends".to_string(), "Work".to_string()]);
+    }
+
+    #[test]
+    fn parse_vcard_group() {
+        let vcard = "BEGIN:VCARD\nVERSION:3.0\nFN:family\nUID:group-1\nX-ADDRESSBOOKSERVER-KIND:GROUP\nX-ADDRESSBOOKSERVER-MEMBER:urn:uuid:uid-1\nX-ADDRESSBOOKSERVER-MEMBER:urn:uuid:uid-2\nEND:VCARD";
+        let parsed = parse_vcard(vcard).unwrap();
+        match parsed {
+            ParsedVCard::Group(g) => {
+                assert_eq!(g.name, "family");
+                assert_eq!(g.member_uids, vec!["uid-1", "uid-2"]);
+            }
+            _ => panic!("Expected group vCard"),
+        }
     }
 
     #[test]
@@ -630,7 +748,7 @@ mod tests {
                 website: Some("https://johndoe.com".to_string()),
                 signal: Some("john.42".to_string()),
                 preferred_method: Some("Email".to_string()),
-                category: ContactCategory::Personal,
+                groups: vec!["Personal".to_string()],
                 last_contacted: Some(NaiveDate::from_ymd_opt(2025, 2, 20).unwrap()),
                 sync_href: Some("/dav/addr/john.vcf".to_string()),
             },
@@ -642,7 +760,7 @@ mod tests {
                 website: None,
                 signal: None,
                 preferred_method: None,
-                category: ContactCategory::Service,
+                groups: vec!["Service".to_string(), "Work".to_string()],
                 last_contacted: None,
                 sync_href: None,
             },
@@ -657,7 +775,7 @@ mod tests {
         assert_eq!(parsed[0].website, Some("https://johndoe.com".to_string()));
         assert_eq!(parsed[0].signal, Some("john.42".to_string()));
         assert_eq!(parsed[0].preferred_method, Some("Email".to_string()));
-        assert_eq!(parsed[0].category, ContactCategory::Personal);
+        assert_eq!(parsed[0].groups, vec!["Personal".to_string()]);
         assert_eq!(
             parsed[0].last_contacted,
             Some(NaiveDate::from_ymd_opt(2025, 2, 20).unwrap())
@@ -666,7 +784,7 @@ mod tests {
         assert_eq!(parsed[1].id, jane_id);
         assert_eq!(parsed[1].name, "Jane Smith");
         assert_eq!(parsed[1].email, None);
-        assert_eq!(parsed[1].category, ContactCategory::Service);
+        assert_eq!(parsed[1].groups, vec!["Service".to_string(), "Work".to_string()]);
         assert_eq!(parsed[1].last_contacted, None);
         assert_eq!(parsed[1].sync_href, None);
     }
@@ -681,7 +799,7 @@ mod tests {
             website: None,
             signal: None,
             preferred_method: None,
-            category: ContactCategory::Personal,
+            groups: vec!["Personal".to_string()],
             last_contacted: Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()),
             sync_href: None,
         }];

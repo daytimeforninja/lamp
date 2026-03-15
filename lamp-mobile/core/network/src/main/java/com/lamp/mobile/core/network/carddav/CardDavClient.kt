@@ -1,7 +1,6 @@
 package com.lamp.mobile.core.network.carddav
 
 import com.lamp.mobile.core.model.Contact
-import com.lamp.mobile.core.model.ContactCategory
 import com.lamp.mobile.core.network.MethodPreservingRedirectInterceptor
 import com.lamp.mobile.core.network.caldav.CalDavClient
 import com.lamp.mobile.core.network.caldav.WebDavXmlParser
@@ -150,11 +149,39 @@ class CardDavClient(
             throw Exception("REPORT $href failed: ${response.status} — ${xml.take(200)}")
         }
         CalDavClient.requireXml(xml, response.status)
-        return WebDavXmlParser.parseMultistatus(xml).mapNotNull { resp ->
-            val vcard = resp.calendarData ?: return@mapNotNull null
-            val contact = parseVcard(vcard) ?: return@mapNotNull null
-            resp.href to contact.copy(syncHref = resp.href, syncEtag = resp.etag)
+
+        // Two-pass: collect contacts and group definitions
+        val contacts = mutableListOf<Triple<String?, String, Contact>>() // uid, href, contact
+        val groupDefs = mutableListOf<Companion.VCardGroup>()
+
+        for (resp in WebDavXmlParser.parseMultistatus(xml)) {
+            val vcard = resp.calendarData ?: continue
+            when (val parsed = parseVcard(vcard)) {
+                is Companion.ParsedVCard.ContactResult -> {
+                    contacts.add(Triple(parsed.uid, resp.href, parsed.contact.copy(
+                        syncHref = resp.href, syncEtag = resp.etag
+                    )))
+                }
+                is Companion.ParsedVCard.GroupResult -> groupDefs.add(parsed.group)
+                null -> {}
+            }
         }
+
+        // Resolve group memberships by UID
+        if (groupDefs.isNotEmpty()) {
+            val uidToGroups = mutableMapOf<String, MutableList<String>>()
+            for (group in groupDefs) {
+                for (memberUid in group.memberUids) {
+                    uidToGroups.getOrPut(memberUid) { mutableListOf() }.add(group.name)
+                }
+            }
+            return contacts.map { (uid, href, contact) ->
+                val groups = uid?.let { uidToGroups[it] }
+                href to if (groups != null) contact.copy(groups = groups) else contact
+            }
+        }
+
+        return contacts.map { (_, href, contact) -> href to contact }
     }
 
     suspend fun findFirstAddressbook(): Result<String> = runCatching {
@@ -233,8 +260,9 @@ class CardDavClient(
             contact.website?.let { appendLine("URL:$it") }
             contact.signal?.let { appendLine("X-SIGNAL:$it") }
             contact.preferredMethod?.let { appendLine("X-PREFERRED-METHOD:$it") }
-            val cat = if (contact.category == ContactCategory.SERVICE) "Service" else "Personal"
-            appendLine("CATEGORIES:$cat")
+            if (contact.groups.isNotEmpty()) {
+                appendLine("CATEGORIES:${contact.groups.joinToString(",")}")
+            }
             appendLine("END:VCARD")
         }
 
@@ -243,7 +271,21 @@ class CardDavClient(
          * Handles FN, EMAIL, TEL, URL, X-SIGNAL, X-PREFERRED-METHOD, CATEGORIES.
          * Matches desktop's parse_vcard logic.
          */
-        fun parseVcard(vcard: String): Contact? {
+        /** A parsed group vCard (X-ADDRESSBOOKSERVER-KIND:GROUP). */
+        data class VCardGroup(val name: String, val memberUids: List<String>)
+
+        /** Intermediate result: either a contact (with UID) or a group definition. */
+        sealed class ParsedVCard {
+            data class ContactResult(val uid: String?, val contact: Contact) : ParsedVCard()
+            data class GroupResult(val group: VCardGroup) : ParsedVCard()
+        }
+
+        /**
+         * Parse a vCard string into either a Contact or a group definition.
+         * Handles FN, UID, EMAIL, TEL, URL, X-SIGNAL, X-PREFERRED-METHOD, CATEGORIES,
+         * and Apple/Fastmail group format (X-ADDRESSBOOKSERVER-KIND/MEMBER).
+         */
+        fun parseVcard(vcard: String): ParsedVCard? {
             // Unfold continuation lines (RFC 6350)
             val unfolded = vcard
                 .replace("\r\n ", "")
@@ -252,12 +294,15 @@ class CardDavClient(
                 .replace("\n\t", "")
 
             var name: String? = null
+            var uid: String? = null
             var email: String? = null
             var phone: String? = null
             var website: String? = null
             var signal: String? = null
             var preferredMethod: String? = null
-            var category = ContactCategory.PERSONAL
+            val groups = mutableListOf<String>()
+            var isGroup = false
+            val memberUids = mutableListOf<String>()
 
             for (line in unfolded.lines()) {
                 val colonIdx = line.indexOf(':')
@@ -268,29 +313,49 @@ class CardDavClient(
 
                 when (key) {
                     "FN" -> name = value
+                    "UID" -> uid = value
                     "EMAIL" -> if (email == null) email = value
                     "TEL" -> if (phone == null) phone = value
                     "URL" -> if (website == null) website = value
                     "X-SIGNAL" -> signal = value
                     "X-PREFERRED-METHOD" -> preferredMethod = value
                     "CATEGORIES" -> {
-                        if (value.split(",").any { it.trim().equals("Service", ignoreCase = true) }) {
-                            category = ContactCategory.SERVICE
+                        for (cat in value.split(",")) {
+                            val trimmed = cat.trim()
+                            if (trimmed.isNotEmpty() && trimmed !in groups) {
+                                groups.add(trimmed)
+                            }
                         }
+                    }
+                    "X-ADDRESSBOOKSERVER-KIND" -> {
+                        if (value.equals("GROUP", ignoreCase = true)) isGroup = true
+                    }
+                    "X-ADDRESSBOOKSERVER-MEMBER" -> {
+                        val memberUid = value.removePrefix("urn:uuid:")
+                        if (memberUid.isNotEmpty()) memberUids.add(memberUid)
                     }
                 }
             }
 
             if (name.isNullOrBlank()) return null
 
-            return Contact(
-                name = name,
-                email = email,
-                phone = phone,
-                website = website,
-                signal = signal,
-                preferredMethod = preferredMethod,
-                category = category,
+            if (isGroup) {
+                return ParsedVCard.GroupResult(VCardGroup(name, memberUids))
+            }
+
+            if (groups.isEmpty()) groups.add("Personal")
+
+            return ParsedVCard.ContactResult(
+                uid = uid,
+                contact = Contact(
+                    name = name,
+                    email = email,
+                    phone = phone,
+                    website = website,
+                    signal = signal,
+                    preferredMethod = preferredMethod,
+                    groups = groups,
+                ),
             )
         }
 
@@ -319,7 +384,7 @@ class CardDavClient(
                         website = remoteContact.website ?: byHref.website,
                         signal = remoteContact.signal ?: byHref.signal,
                         preferredMethod = remoteContact.preferredMethod ?: byHref.preferredMethod,
-                        category = remoteContact.category,
+                        groups = remoteContact.groups.ifEmpty { byHref.groups },
                         syncHref = href,
                     ))
                     continue
@@ -335,7 +400,7 @@ class CardDavClient(
                         website = remoteContact.website ?: byName.website,
                         signal = remoteContact.signal ?: byName.signal,
                         preferredMethod = remoteContact.preferredMethod ?: byName.preferredMethod,
-                        category = remoteContact.category,
+                        groups = remoteContact.groups.ifEmpty { byName.groups },
                         syncHref = href,
                     ))
                     continue

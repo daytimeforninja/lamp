@@ -12,7 +12,8 @@ data class ContactEntity(
     val website: String?,
     val signal: String?,
     val preferredMethod: String?,
-    val category: String,
+    val category: String, // legacy column kept for migration compatibility
+    val groups: String, // comma-separated group names
     val lastContacted: String?, // ISO date
     val syncHref: String?,
     val syncEtag: String?,

@@ -25,6 +25,7 @@ data class TaskEntity(
     val scheduledTime: String?,
     val deadlineTime: String?,
     val logbookEntries: String, // JSON array of ISO datetimes
+    val clockEntries: String = "[]", // JSON array of {start, end} objects
     val dayplanDate: String?, // ISO date
     val syncHref: String?,
     val syncHash: Long?,

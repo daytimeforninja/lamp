@@ -37,6 +37,9 @@ class TaskRepositoryImpl @Inject constructor(
     override fun observeSomeday(): Flow<List<Task>> =
         taskDao.observeSomeday().map { list -> list.map { it.toDomain() } }
 
+    override fun observeArchived(): Flow<List<Task>> =
+        taskDao.observeArchived().map { list -> list.map { it.toDomain() } }
+
     override fun observeByProject(projectName: String): Flow<List<Task>> =
         taskDao.observeByProject(projectName).map { list -> list.map { it.toDomain() } }
 
@@ -44,12 +47,18 @@ class TaskRepositoryImpl @Inject constructor(
         taskDao.getById(id.toString())?.toDomain()
 
     override suspend fun save(task: Task, markDirty: Boolean) {
-        val location = when (task.state) {
-            TaskState.TODO -> "inbox"
-            TaskState.NEXT -> "next"
-            TaskState.WAITING -> "waiting"
-            TaskState.SOMEDAY -> "someday"
-            TaskState.DONE, TaskState.CANCELLED -> "archive"
+        // Preserve "habits" location if the task is already stored as a habit
+        val existing = taskDao.getById(task.id.toString())
+        val location = if (existing?.location == "habits") {
+            "habits"
+        } else {
+            when (task.state) {
+                TaskState.TODO -> "inbox"
+                TaskState.NEXT -> "next"
+                TaskState.WAITING -> "waiting"
+                TaskState.SOMEDAY -> "someday"
+                TaskState.DONE, TaskState.CANCELLED -> "archive"
+            }
         }
         taskDao.upsert(task.toEntity(syncDirty = markDirty, location = location))
     }

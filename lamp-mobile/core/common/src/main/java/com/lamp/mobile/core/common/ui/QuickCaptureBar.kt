@@ -30,7 +30,7 @@ fun QuickCaptureBar(
             modifier = Modifier.weight(1f),
             singleLine = true,
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(4.dp))
         FilledIconButton(onClick = onSubmit) {
             Icon(Icons.Filled.Add, contentDescription = "Add")
         }

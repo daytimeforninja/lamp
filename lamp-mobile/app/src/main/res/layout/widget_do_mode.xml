@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="8dp"
+    android:background="@drawable/widget_bg">
+
+    <!-- Done button — dharma wheel -->
+    <TextView
+        android:id="@+id/widget_done_btn"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:layout_alignParentStart="true"
+        android:layout_centerVertical="true"
+        android:gravity="center"
+        android:text="\u2638"
+        android:textSize="28sp"
+        android:textColor="#D4A017"
+        android:shadowColor="#D4A017"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="8"
+        android:paddingStart="4dp"
+        android:paddingEnd="6dp"
+        android:background="?android:attr/selectableItemBackground" />
+
+    <!-- Nav: previous item (up) -->
+    <TextView
+        android:id="@+id/widget_nav_up"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentTop="true"
+        android:text="\u0F0E"
+        android:textSize="14sp"
+        android:textColor="#D4A017"
+        android:shadowColor="#D4A017"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="4"
+        android:paddingStart="8dp"
+        android:paddingEnd="4dp"
+        android:background="?android:attr/selectableItemBackground" />
+
+    <!-- Nav: next item (down) -->
+    <TextView
+        android:id="@+id/widget_nav_down"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:text="\u0F0F"
+        android:textSize="14sp"
+        android:textColor="#D4A017"
+        android:shadowColor="#D4A017"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="4"
+        android:paddingStart="8dp"
+        android:paddingEnd="4dp"
+        android:background="?android:attr/selectableItemBackground" />
+
+    <!-- Timer -->
+    <Chronometer
+        android:id="@+id/widget_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_toStartOf="@id/widget_nav_up"
+        android:layout_centerVertical="true"
+        android:layout_marginEnd="4dp"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="#FFFF6F3C"
+        android:shadowColor="#FFFF6F3C"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="10" />
+
+    <!-- Task/habit title — tapping toggles timer -->
+    <TextView
+        android:id="@+id/widget_task_title"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_toEndOf="@id/widget_done_btn"
+        android:layout_toStartOf="@+id/widget_timer"
+        android:gravity="center_vertical"
+        android:layout_marginEnd="4dp"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#FFE8C36A"
+        android:shadowColor="#FFD4A017"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="8" />
+
+</RelativeLayout>

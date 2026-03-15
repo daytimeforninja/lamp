@@ -6,6 +6,7 @@ import com.lamp.mobile.core.data.credential.CredentialStore
 import com.lamp.mobile.core.data.repository.SyncMetadataRepository
 import com.lamp.mobile.core.network.caldav.CalDavClient
 import com.lamp.mobile.core.network.carddav.CardDavClient
+import com.lamp.mobile.core.network.imap.ImapClient
 import com.lamp.mobile.core.network.webdav.WebDavClient
 import com.lamp.mobile.sync.SyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -30,6 +31,10 @@ data class SettingsUiState(
     val notesUrl: String = "",
     val notesUsername: String = "",
     val notesPassword: String = "",
+    val imapHost: String = "",
+    val imapUsername: String = "",
+    val imapPassword: String = "",
+    val imapFolder: String = "",
     val message: String? = null,
     val testingService: String? = null,
     val testResult: ConnectionTestResult? = null,
@@ -48,6 +53,10 @@ sealed class SettingsIntent {
     data class SetNotesUrl(val url: String) : SettingsIntent()
     data class SetNotesUsername(val username: String) : SettingsIntent()
     data class SetNotesPassword(val password: String) : SettingsIntent()
+    data class SetImapHost(val host: String) : SettingsIntent()
+    data class SetImapUsername(val username: String) : SettingsIntent()
+    data class SetImapPassword(val password: String) : SettingsIntent()
+    data class SetImapFolder(val folder: String) : SettingsIntent()
     data object SaveCredentials : SettingsIntent()
     data object SyncNow : SettingsIntent()
     data class TestConnection(val service: String) : SettingsIntent()
@@ -79,6 +88,10 @@ class SettingsViewModel @Inject constructor(
                 notesUrl = credentialStore.getServerUrl("notes") ?: "",
                 notesUsername = credentialStore.getUsername("notes") ?: "",
                 notesPassword = credentialStore.getPassword("notes") ?: "",
+                imapHost = credentialStore.getServerUrl("imap") ?: "",
+                imapUsername = credentialStore.getUsername("imap") ?: "",
+                imapPassword = credentialStore.getPassword("imap") ?: "",
+                imapFolder = prefs.getString("imap_folder", "") ?: "",
                 availableContexts = savedContexts,
             )
         }
@@ -108,6 +121,10 @@ class SettingsViewModel @Inject constructor(
             is SettingsIntent.SetNotesUrl -> updateState { copy(notesUrl = intent.url) }
             is SettingsIntent.SetNotesUsername -> updateState { copy(notesUsername = intent.username) }
             is SettingsIntent.SetNotesPassword -> updateState { copy(notesPassword = intent.password) }
+            is SettingsIntent.SetImapHost -> updateState { copy(imapHost = intent.host) }
+            is SettingsIntent.SetImapUsername -> updateState { copy(imapUsername = intent.username) }
+            is SettingsIntent.SetImapPassword -> updateState { copy(imapPassword = intent.password) }
+            is SettingsIntent.SetImapFolder -> updateState { copy(imapFolder = intent.folder) }
             is SettingsIntent.SaveCredentials -> {
                 val s = currentState
                 credentialStore.setServerUrl("calendars", s.calendarUrl)
@@ -119,6 +136,12 @@ class SettingsViewModel @Inject constructor(
                 credentialStore.setServerUrl("notes", s.notesUrl)
                 credentialStore.setUsername("notes", s.notesUsername)
                 credentialStore.setPassword("notes", s.notesPassword)
+                if (s.imapHost.isNotBlank()) {
+                    credentialStore.setServerUrl("imap", s.imapHost)
+                    credentialStore.setUsername("imap", s.imapUsername)
+                    credentialStore.setPassword("imap", s.imapPassword)
+                    prefs.edit().putString("imap_folder", s.imapFolder).apply()
+                }
                 updateState { copy(message = "Credentials saved") }
             }
             is SettingsIntent.SyncNow -> {
@@ -132,6 +155,7 @@ class SettingsViewModel @Inject constructor(
                     "calendars" -> testCalDav(s.calendarUrl, s.calendarUsername, s.calendarPassword)
                     "contacts" -> testCardDav(s.contactsUrl, s.contactsUsername, s.contactsPassword)
                     "notes" -> testWebDav(s.notesUrl, s.notesUsername, s.notesPassword)
+                    "imap" -> testImap(s.imapHost, s.imapUsername, s.imapPassword)
                     else -> ConnectionTestResult(intent.service, false, "Unknown service")
                 }
                 updateState { copy(testingService = null, testResult = result) }
@@ -184,6 +208,17 @@ class SettingsViewModel @Inject constructor(
             ConnectionTestResult("contacts", false, e.message ?: "Connection failed")
         } finally {
             client.close()
+        }
+    }
+
+    private suspend fun testImap(host: String, user: String, pass: String): ConnectionTestResult {
+        if (host.isBlank() || user.isBlank()) return ConnectionTestResult("imap", false, "Host and username required")
+        val client = ImapClient(host, user, pass)
+        return try {
+            val msg = client.testConnection().getOrThrow()
+            ConnectionTestResult("imap", true, msg)
+        } catch (e: Exception) {
+            ConnectionTestResult("imap", false, e.message ?: "Connection failed")
         }
     }
 

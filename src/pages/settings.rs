@@ -13,8 +13,6 @@ pub fn settings_view<'a>(
     service_passwords: &[String; 4],
     service_test_status: &[Option<Result<String, String>>; 4],
     discovered_calendars: &[CalendarInfo],
-    anthropic_api_key_input: &str,
-    anthropic_test_status: &Option<Result<String, String>>,
     sync_status: &SyncStatus,
 ) -> Element<'a, Message> {
     let mut content = column().spacing(12);
@@ -291,33 +289,6 @@ pub fn settings_view<'a>(
                 .on_press(Message::TestServiceConnection(ServiceKind::Imap)),
         );
         if let Some(ref result) = service_test_status[3] {
-            match result {
-                Ok(msg) => test_row = test_row.push(text::body(format!("✓ {}", msg))),
-                Err(e) => test_row = test_row.push(text::body(format!("✗ {}", e))),
-            }
-        }
-        content = content.push(test_row);
-    }
-
-    // --- AI Task Extraction ---
-    content = content.push(text::title4(crate::fl!("settings-ai")));
-    content = content.push(
-        text_input::secure_input(
-            crate::fl!("settings-ai-api-key"),
-            anthropic_api_key_input.to_string(),
-            None::<Message>,
-            true,
-        )
-        .on_input(Message::SetAnthropicApiKey)
-        .width(Length::Fill),
-    );
-    {
-        let mut test_row = row().spacing(8).align_y(Alignment::Center);
-        test_row = test_row.push(
-            button::standard(crate::fl!("sync-test-connection"))
-                .on_press(Message::TestAnthropicApiKey),
-        );
-        if let Some(result) = anthropic_test_status {
             match result {
                 Ok(msg) => test_row = test_row.push(text::body(format!("✓ {}", msg))),
                 Err(e) => test_row = test_row.push(text::body(format!("✗ {}", e))),

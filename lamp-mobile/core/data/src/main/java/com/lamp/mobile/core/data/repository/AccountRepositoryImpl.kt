@@ -26,4 +26,7 @@ class AccountRepositoryImpl @Inject constructor(
 
     override suspend fun delete(id: UUID) =
         accountDao.deleteById(id.toString())
+
+    override suspend fun getAll(): List<Account> =
+        accountDao.getAll().map { it.toDomain() }
 }

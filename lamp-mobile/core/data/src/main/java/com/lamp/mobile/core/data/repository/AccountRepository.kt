@@ -9,4 +9,5 @@ interface AccountRepository {
     suspend fun getById(id: UUID): Account?
     suspend fun save(account: Account)
     suspend fun delete(id: UUID)
+    suspend fun getAll(): List<Account>
 }

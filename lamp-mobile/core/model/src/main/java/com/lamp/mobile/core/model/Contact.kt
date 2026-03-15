@@ -3,23 +3,6 @@ package com.lamp.mobile.core.model
 import java.time.LocalDate
 import java.util.UUID
 
-enum class ContactCategory {
-    PERSONAL,
-    SERVICE;
-
-    override fun toString(): String = when (this) {
-        PERSONAL -> "Personal"
-        SERVICE -> "Service"
-    }
-
-    companion object {
-        fun fromString(s: String): ContactCategory = when (s.lowercase()) {
-            "service" -> SERVICE
-            else -> PERSONAL
-        }
-    }
-}
-
 data class Contact(
     val id: UUID = UUID.randomUUID(),
     val name: String,
@@ -28,7 +11,8 @@ data class Contact(
     val website: String? = null,
     val signal: String? = null,
     val preferredMethod: String? = null,
-    val category: ContactCategory = ContactCategory.PERSONAL,
+    /** Contact groups / categories (from vCard CATEGORIES, comma-separated). */
+    val groups: List<String> = listOf("Personal"),
     val lastContacted: LocalDate? = null,
     val syncHref: String? = null,
     val syncEtag: String? = null,

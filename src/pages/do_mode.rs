@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::NaiveDateTime;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
 use cosmic::Element;
@@ -11,6 +12,17 @@ use crate::core::task::Task;
 use crate::fl;
 use crate::message::Message;
 
+fn format_duration(secs: i64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{}h {:02}m", h, m)
+    } else {
+        format!("{}m {:02}s", m, s)
+    }
+}
+
 pub fn do_mode_view<'a>(
     day_plan: &Option<DayPlan>,
     all_tasks: &[Task],
@@ -19,8 +31,10 @@ pub fn do_mode_view<'a>(
     shopping_items: &[ListItem],
     expanded_task: Option<uuid::Uuid>,
     note_inputs: &HashMap<uuid::Uuid, String>,
+    active_timer: Option<(uuid::Uuid, NaiveDateTime)>,
 ) -> Element<'a, Message> {
     let today = chrono::Local::now().date_naive();
+    let now = chrono::Local::now().naive_local();
 
     let Some(plan) = day_plan else {
         return container(
@@ -51,7 +65,7 @@ pub fn do_mode_view<'a>(
     let mut confirmed_tasks: Vec<&Task> = plan
         .confirmed_task_ids
         .iter()
-        .filter_map(|id| all_tasks.iter().find(|t| t.id == *id))
+        .filter_map(|id| all_tasks.iter().find(|t| t.id == *id && !t.state.is_done()))
         .collect();
     confirmed_tasks.sort_by_key(|t| t.esc.unwrap_or(u32::MAX));
 
@@ -65,23 +79,65 @@ pub fn do_mode_view<'a>(
         for task in &confirmed_tasks {
             let id = task.id;
             let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
+            let is_active = active_timer.map(|(tid, _)| tid == id).unwrap_or(false);
 
-            let r = row()
+            // Total work time (completed sessions + current active if running)
+            let mut total_secs = task.total_work_secs();
+            if let Some((tid, start)) = active_timer {
+                if tid == id {
+                    total_secs += (now - start).num_seconds().max(0);
+                }
+            }
+
+            let title_text = if is_active {
+                let elapsed = active_timer
+                    .map(|(_, start)| (now - start).num_seconds().max(0))
+                    .unwrap_or(0);
+                format!(">> {} {} — {}", task.title, esc_text, format_duration(elapsed))
+            } else {
+                format!("{}{}", task.title, esc_text)
+            };
+
+            let mut r = row()
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .push(
                     checkbox("", false)
                         .on_toggle(move |_| Message::DoMarkDone(id)),
-                )
-                .push(
-                    button::text(format!("{}{}", task.title, esc_text))
-                        .on_press(Message::ToggleTaskExpand(id)),
-                )
-                .push(cosmic::widget::horizontal_space())
-                .push(
-                    button::icon(cosmic::widget::icon::from_name("accessories-text-editor-symbolic"))
-                        .on_press(Message::ToggleTaskExpand(id)),
                 );
+
+            // Play/stop timer button
+            let timer_icon_name = if is_active {
+                "media-playback-stop-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            };
+            let timer_btn = button::icon(
+                cosmic::widget::icon::from_name(timer_icon_name),
+            )
+            .on_press(Message::ToggleWorkTimer(id));
+            r = r.push(timer_btn);
+
+            // Task title
+            let title_widget = if is_active {
+                text::body(title_text).width(Length::Fill)
+            } else {
+                text::body(title_text).width(Length::Fill)
+            };
+            r = r.push(title_widget);
+
+            // Show total tracked time if any
+            if total_secs > 0 {
+                r = r.push(cosmic::widget::horizontal_space());
+                r = r.push(text::caption(format_duration(total_secs)));
+            } else {
+                r = r.push(cosmic::widget::horizontal_space());
+            }
+
+            r = r.push(
+                button::icon(cosmic::widget::icon::from_name("accessories-text-editor-symbolic"))
+                    .on_press(Message::ToggleTaskExpand(id)),
+            );
 
             let mut task_col = column().spacing(4);
             task_col = task_col.push(r);
@@ -114,6 +170,19 @@ pub fn do_mode_view<'a>(
         for ct in &plan.completed_tasks {
             let id = ct.id;
             let esc_text = ct.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
+
+            // Show total tracked time for completed tasks too
+            let total_secs = all_tasks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.total_work_secs())
+                .unwrap_or(0);
+            let time_text = if total_secs > 0 {
+                format!("  ({})", format_duration(total_secs))
+            } else {
+                String::new()
+            };
+
             let r = row()
                 .spacing(8)
                 .align_y(Alignment::Center)
@@ -121,7 +190,7 @@ pub fn do_mode_view<'a>(
                     checkbox("", true)
                         .on_toggle(move |_| Message::DoMarkDone(id)),
                 )
-                .push(text::caption(format!("{}{}", ct.title, esc_text)).width(Length::Fill));
+                .push(text::caption(format!("{}{}{}", ct.title, esc_text, time_text)).width(Length::Fill));
             tasks_col = tasks_col.push(r);
         }
 

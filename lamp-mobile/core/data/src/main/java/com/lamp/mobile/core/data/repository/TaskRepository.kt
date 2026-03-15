@@ -13,6 +13,7 @@ interface TaskRepository {
     fun observeNextActions(): Flow<List<Task>>
     fun observeWaiting(): Flow<List<Task>>
     fun observeSomeday(): Flow<List<Task>>
+    fun observeArchived(): Flow<List<Task>>
     fun observeByProject(projectName: String): Flow<List<Task>>
     suspend fun getById(id: UUID): Task?
     suspend fun save(task: Task, markDirty: Boolean = true)

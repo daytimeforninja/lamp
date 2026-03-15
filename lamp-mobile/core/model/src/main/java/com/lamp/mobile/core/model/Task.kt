@@ -25,6 +25,7 @@ data class Task(
     val scheduledTime: String? = null,
     val deadlineTime: String? = null,
     val logbookEntries: List<LocalDateTime> = emptyList(),
+    val clockEntries: List<Pair<LocalDateTime, LocalDateTime>> = emptyList(),
     val dayplanDate: LocalDate? = null,
     val syncHref: String? = null,
     val syncHash: Long? = null,
@@ -49,4 +50,9 @@ data class Task(
     }
 
     fun hasContext(ctx: String): Boolean = contexts.contains(ctx)
+
+    /** Total tracked work time in seconds. */
+    fun totalWorkSecs(): Long = clockEntries.sumOf { (start, end) ->
+        java.time.Duration.between(start, end).seconds.coerceAtLeast(0)
+    }
 }

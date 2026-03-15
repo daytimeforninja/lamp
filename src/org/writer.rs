@@ -140,9 +140,21 @@ impl OrgWriter {
         }
         out.push_str(&format!("{indent}:END:\n"));
 
-        // Logbook (state-change entries)
-        if !task.logbook_entries.is_empty() {
+        // Logbook (clock entries + state-change entries)
+        if !task.logbook_entries.is_empty() || !task.clock_entries.is_empty() {
             out.push_str(&format!("{indent}:LOGBOOK:\n"));
+            for (start, end) in task.clock_entries.iter().rev() {
+                let duration = (*end - *start).num_seconds().max(0);
+                let hours = duration / 3600;
+                let mins = (duration % 3600) / 60;
+                out.push_str(&format!(
+                    "{indent}CLOCK: [{}]--[{}] => {:>2}:{:02}\n",
+                    start.format("%Y-%m-%d %a %H:%M"),
+                    end.format("%Y-%m-%d %a %H:%M"),
+                    hours,
+                    mins,
+                ));
+            }
             for entry in task.logbook_entries.iter().rev() {
                 out.push_str(&Self::format_logbook_entry("DONE", "TODO", *entry));
                 out.push('\n');

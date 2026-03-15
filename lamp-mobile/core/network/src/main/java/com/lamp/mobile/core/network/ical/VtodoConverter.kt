@@ -112,6 +112,14 @@ object VtodoConverter {
             lines.add(ICalHelpers.foldLine("X-LAMP-LOGBOOK:$entries"))
         }
 
+        // X-LAMP-CLOCK (work timer sessions)
+        if (task.clockEntries.isNotEmpty()) {
+            val entries = task.clockEntries.joinToString(",") { (s, e) ->
+                "${ICalHelpers.formatDatetime(s)}/${ICalHelpers.formatDatetime(e)}"
+            }
+            lines.add(ICalHelpers.foldLine("X-LAMP-CLOCK:$entries"))
+        }
+
         lines.add("END:VTODO")
         lines.add("END:VCALENDAR")
 
@@ -141,6 +149,7 @@ object VtodoConverter {
         var lampFollowUp: LocalDate? = null
         var lampRecurrence: String? = null
         var lampLogbook: String? = null
+        var lampClock: String? = null
         var lampTags: String? = null
         var lampDayplan: LocalDate? = null
 
@@ -172,6 +181,7 @@ object VtodoConverter {
                 "X-LAMP-FOLLOW-UP" -> lampFollowUp = ICalHelpers.parseIcalDate(value)
                 "X-LAMP-RECURRENCE" -> lampRecurrence = value
                 "X-LAMP-LOGBOOK" -> lampLogbook = value
+                "X-LAMP-CLOCK" -> lampClock = value
                 "X-LAMP-TAGS" -> lampTags = value
                 "X-LAMP-DAYPLAN" -> lampDayplan = ICalHelpers.parseIcalDate(value)
             }
@@ -227,6 +237,17 @@ object VtodoConverter {
                 ?.split(",")
                 ?.mapNotNull { ICalHelpers.parseIcalDatetime(it.trim()) }
                 ?: emptyList(),
+            clockEntries = lampClock
+                ?.split(",")
+                ?.mapNotNull { pair ->
+                    val parts = pair.trim().split("/", limit = 2)
+                    if (parts.size == 2) {
+                        val start = ICalHelpers.parseIcalDatetime(parts[0]) ?: return@mapNotNull null
+                        val end = ICalHelpers.parseIcalDatetime(parts[1]) ?: return@mapNotNull null
+                        start to end
+                    } else null
+                }
+                ?: emptyList(),
             dayplanDate = lampDayplan,
             syncUid = uid,
         )
@@ -259,6 +280,10 @@ object VtodoConverter {
         }
         for (entry in task.logbookEntries) {
             hasher.writeString(entry.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+        }
+        for ((start, end) in task.clockEntries) {
+            hasher.writeString(start.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+            hasher.writeString(end.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
         }
         return hasher.finish()
     }

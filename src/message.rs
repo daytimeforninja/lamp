@@ -2,12 +2,14 @@ use chrono::NaiveDate;
 
 use crate::config::CalendarPurpose;
 use crate::fl;
+use crate::core::account::Account;
 use crate::core::link::LinkTarget;
+use crate::core::list_item::ListItem;
 use crate::core::task::{Priority, TaskState};
 use crate::sync::caldav::CalendarInfo;
-use crate::sync::carddav::{Contact, ContactCategory};
+use crate::sync::carddav::Contact;
 use crate::sync::imap::ImapEmail;
-use crate::sync::webdav::NoteSyncResult;
+use crate::sync::webdav::{FileSyncResult, NoteSyncResult};
 use crate::sync::SyncResult;
 use uuid::Uuid;
 
@@ -124,7 +126,7 @@ pub enum Message {
     ConfirmDeleteContact(usize),
     CancelDeleteContact,
     DeleteContact(usize),
-    SetContactCategory(usize, ContactCategory),
+    SetContactGroups(usize, Vec<String>),
     SetContactField(usize, ContactField, String),
     MarkContacted(usize),
     FlipContact(usize),
@@ -167,9 +169,14 @@ pub enum Message {
     PickShoppingItem(Uuid),
     UnpickShoppingItem(Uuid),
 
+    // Sync animation
+    SyncAnimTick,
+
     // Do mode
     DoMarkDone(Uuid),
     DoMarkListItemDone(Uuid),
+    ToggleWorkTimer(Uuid),
+    TimerTick,
 
     // Persistence
     Save,
@@ -191,6 +198,9 @@ pub enum Message {
 
     // All Tasks sort
     SetAllTasksSort(SortColumn),
+
+    // Archive browsing
+    ArchiveSearchChanged(String),
 
     // Task capture form
     OpenNewTaskForm,
@@ -219,6 +229,8 @@ pub enum Message {
     ServiceConnectionTested(ServiceKind, Result<String, String>, Vec<CalendarInfo>),
     SetCalendarPurpose(String, CalendarPurpose),
     SyncNotesCompleted(Result<NoteSyncResult, String>),
+    SyncShoppingCompleted(Result<FileSyncResult<ListItem>, String>),
+    SyncAccountsCompleted(Result<FileSyncResult<Account>, String>),
     ContactsFetched(Result<Vec<Contact>, String>),
     ContactDeleted(Result<(), String>),
 
@@ -228,14 +240,8 @@ pub enum Message {
     EmailArchived(Result<u32, String>),
     SetImapFolder(String),
 
-    // AI batch email suggestions
-    SetAnthropicApiKey(String),
-    TestAnthropicApiKey,
-    AnthropicKeyTested(Result<String, String>),
-    SuggestEmailTasks,
-    BatchSuggestionsReady(Result<Vec<(u32, crate::sync::anthropic::BatchEmailSuggestion)>, String>),
-    ApproveSuggestion(u32),
-    DismissSuggestion(u32),
+    // Quick task creation from email
+    CreateTaskFromEmail(u32),
 
     // Event CRUD
     CreateEvent,
@@ -292,6 +298,7 @@ pub enum WhatPage {
     Contacts,
     Accounts,
     Notes,
+    Archive,
     Settings,
 }
 
@@ -314,6 +321,7 @@ impl WhatPage {
             Self::Contacts => fl!("nav-contacts"),
             Self::Accounts => fl!("nav-accounts"),
             Self::Notes => fl!("nav-notes"),
+            Self::Archive => fl!("nav-archive"),
             Self::Settings => fl!("nav-settings"),
         }
     }
@@ -336,6 +344,7 @@ impl WhatPage {
             Self::Contacts => "system-users-symbolic",
             Self::Accounts => "contact-new-symbolic",
             Self::Notes => "accessories-text-editor-symbolic",
+            Self::Archive => "document-open-recent-symbolic",
             Self::Settings => "emblem-system-symbolic",
         }
     }
@@ -361,6 +370,7 @@ impl WhatPage {
         WhatPage::Contacts,
         WhatPage::Accounts,
         WhatPage::Notes,
+        WhatPage::Archive,
         WhatPage::Settings,
     ];
 

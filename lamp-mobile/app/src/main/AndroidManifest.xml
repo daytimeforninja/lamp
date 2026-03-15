@@ -59,6 +59,23 @@
                 android:resource="@xml/sync_adapter" />
         </service>
 
+        <!-- Do Mode home screen widget -->
+        <receiver
+            android:name=".widget.DoModeWidget"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.lamp.mobile.TOGGLE_TIMER" />
+                <action android:name="com.lamp.mobile.COMPLETE_TASK" />
+                <action android:name="com.lamp.mobile.WIDGET_NAV_UP" />
+                <action android:name="com.lamp.mobile.WIDGET_NAV_DOWN" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/do_mode_widget_info" />
+        </receiver>
+
         <!-- Disable default WorkManager initializer so Hilt's HiltWorkerFactory is used -->
         <provider
             android:name="androidx.startup.InitializationProvider"

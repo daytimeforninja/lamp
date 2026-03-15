@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Outer gold border -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FFD4A017" />
+            <corners android:radius="14dp" />
+        </shape>
+    </item>
+    <!-- Inner dark maroon border -->
+    <item
+        android:left="2dp"
+        android:top="2dp"
+        android:right="2dp"
+        android:bottom="2dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF1A0A0A" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+    <!-- Second gold trim -->
+    <item
+        android:left="4dp"
+        android:top="4dp"
+        android:right="4dp"
+        android:bottom="4dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#99C5961A" />
+            <corners android:radius="10dp" />
+        </shape>
+    </item>
+    <!-- Deep burgundy fill with gradient -->
+    <item
+        android:left="5dp"
+        android:top="5dp"
+        android:right="5dp"
+        android:bottom="5dp">
+        <shape android:shape="rectangle">
+            <gradient
+                android:startColor="#FF2D0A1E"
+                android:centerColor="#FF3B0F24"
+                android:endColor="#FF1E0815"
+                android:angle="135" />
+            <corners android:radius="9dp" />
+        </shape>
+    </item>
+</layer-list>

@@ -43,4 +43,6 @@
     <string name="account_type">com.lamp.mobile</string>
     <string name="account_label">Lamp</string>
     <string name="sync_contacts">Sync Contacts</string>
+    <string name="widget_description">Shows your current Do Mode task</string>
+    <string name="widget_label">Lamp Do Mode</string>
 </resources>

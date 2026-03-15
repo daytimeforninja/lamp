@@ -62,5 +62,6 @@ enum class DrawerDestination(
     REVIEW("review", "Review", Icons.Outlined.RateReview),
     ACCOUNTS("accounts", "Accounts", Icons.Outlined.AccountBalance),
     SETTINGS("settings", "Settings", Icons.Outlined.Settings),
+    ARCHIVE("archive", "Archive", Icons.Outlined.Inventory2),
     CONFLICTS("conflicts", "Conflicts", Icons.Outlined.SyncProblem),
 }

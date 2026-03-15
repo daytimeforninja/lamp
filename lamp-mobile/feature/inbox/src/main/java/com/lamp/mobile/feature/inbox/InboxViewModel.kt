@@ -5,8 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.lamp.mobile.core.common.MviViewModel
 import com.lamp.mobile.core.data.repository.ProjectRepository
 import com.lamp.mobile.core.data.repository.TaskRepository
+import com.lamp.mobile.core.data.sync.SyncEngine
 import com.lamp.mobile.core.model.Task
 import com.lamp.mobile.core.model.TaskState
+import com.lamp.mobile.core.network.imap.ImapEmail
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.launchIn
@@ -16,6 +18,7 @@ import javax.inject.Inject
 
 data class InboxUiState(
     val tasks: List<Task> = emptyList(),
+    val emails: List<ImapEmail> = emptyList(),
     val inputText: String = "",
     val searchQuery: String = "",
     val showEnhancedCapture: Boolean = false,
@@ -32,6 +35,8 @@ sealed class InboxIntent {
     data class SearchQueryChanged(val query: String) : InboxIntent()
     data object ShowEnhancedCapture : InboxIntent()
     data object HideEnhancedCapture : InboxIntent()
+    data class CreateTaskFromEmail(val email: ImapEmail) : InboxIntent()
+    data class ArchiveEmail(val uid: Long) : InboxIntent()
     data class SubmitEnhanced(
         val title: String,
         val state: TaskState,
@@ -51,6 +56,7 @@ sealed class InboxEffect {
 class InboxViewModel @Inject constructor(
     private val taskRepo: TaskRepository,
     private val projectRepo: ProjectRepository,
+    private val syncEngine: SyncEngine,
     @ApplicationContext private val context: Context,
 ) : MviViewModel<InboxUiState, InboxIntent, InboxEffect>(InboxUiState()) {
 
@@ -64,6 +70,10 @@ class InboxViewModel @Inject constructor(
 
         projectRepo.observeAll()
             .onEach { projects -> updateState { copy(allProjects = projects.map { it.name }) } }
+            .launchIn(viewModelScope)
+
+        syncEngine.imapEmails
+            .onEach { emails -> updateState { copy(emails = emails) } }
             .launchIn(viewModelScope)
     }
 
@@ -96,6 +106,12 @@ class InboxViewModel @Inject constructor(
                 taskRepo.save(task.copy(state = intent.state))
             }
             is InboxIntent.SearchQueryChanged -> updateState { copy(searchQuery = intent.query) }
+            is InboxIntent.CreateTaskFromEmail -> {
+                syncEngine.createTaskFromEmail(intent.email)
+            }
+            is InboxIntent.ArchiveEmail -> {
+                syncEngine.archiveImapEmail(intent.uid)
+            }
             is InboxIntent.ShowEnhancedCapture -> updateState { copy(showEnhancedCapture = true) }
             is InboxIntent.HideEnhancedCapture -> updateState { copy(showEnhancedCapture = false) }
             is InboxIntent.SubmitEnhanced -> {

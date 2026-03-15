@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use chrono::Local;
 use cosmic::iced::{Alignment, Length};
@@ -7,7 +7,7 @@ use cosmic::{Element, theme};
 
 use crate::fl;
 use crate::message::{ContactField, Message};
-use crate::sync::carddav::{Contact, ContactCategory};
+use crate::sync::carddav::Contact;
 
 const CARD_WIDTH: f32 = 280.0;
 
@@ -57,11 +57,12 @@ fn card_front(contact: &Contact) -> Element<'static, Message> {
 
     col = col.push(text::body(contact.name.clone()));
 
-    let cat_label = match contact.category {
-        ContactCategory::Personal => fl!("contacts-personal"),
-        ContactCategory::Service => fl!("contacts-service"),
+    let groups_label = if contact.groups.is_empty() {
+        fl!("contacts-personal")
+    } else {
+        contact.groups.join(", ")
     };
-    col = col.push(text::caption(cat_label).size(11.0));
+    col = col.push(text::caption(groups_label).size(11.0));
 
     col = col.push(text::caption(last_contacted_text(contact)).size(11.0));
 
@@ -186,27 +187,24 @@ fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
             ),
     );
 
-    // Category dropdown
-    let cat_labels: Vec<String> = vec!["Personal".to_string(), "Service".to_string()];
-    let cat_selected = match contact.category {
-        ContactCategory::Personal => Some(0usize),
-        ContactCategory::Service => Some(1),
-    };
+    // Groups text input (comma-separated)
+    let groups_val = contact.groups.join(", ");
     col = col.push(
         row()
             .spacing(8)
             .align_y(Alignment::Center)
-            .push(text::caption(fl!("contacts-category")))
+            .push(text::caption(fl!("contacts-groups")))
             .push(
-                dropdown(cat_labels, cat_selected, move |idx| {
-                    let cat = if idx == 1 {
-                        ContactCategory::Service
-                    } else {
-                        ContactCategory::Personal
-                    };
-                    Message::SetContactCategory(index, cat)
-                })
-                .width(Length::Shrink),
+                text_input::text_input(fl!("contacts-groups-placeholder"), groups_val)
+                    .on_input(move |v| {
+                        let groups: Vec<String> = v.split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        Message::SetContactGroups(index, groups)
+                    })
+                    .on_submit(move |_| Message::FlipContact(index))
+                    .width(Length::Fill),
             ),
     );
 
@@ -304,28 +302,24 @@ pub fn contacts_view(
                 .width(Length::Fill),
         );
     } else {
-        // Personal section (indices are already original indices from caller)
-        let personal: Vec<(usize, &Contact)> = contacts
-            .iter()
-            .filter(|(_, c)| c.category == ContactCategory::Personal)
-            .cloned()
-            .collect();
+        // Groups to hide from the UI — contacts only in these groups are not shown
+        const HIDDEN_GROUPS: &[&str] = &["Personal", "archive", "Autosaved"];
 
-        if !personal.is_empty() {
-            content = content.push(text::title4(fl!("contacts-personal")));
-            content = content.push(card_grid(&personal, flipped, editing, pending_delete));
+        // Group contacts by their visible groups only
+        let mut by_group: BTreeMap<String, Vec<(usize, &Contact)>> = BTreeMap::new();
+        for &(idx, contact) in contacts {
+            for group in &contact.groups {
+                if !HIDDEN_GROUPS.iter().any(|h| group.eq_ignore_ascii_case(h)) {
+                    by_group.entry(group.clone())
+                        .or_default()
+                        .push((idx, contact));
+                }
+            }
         }
 
-        // Service section
-        let service: Vec<(usize, &Contact)> = contacts
-            .iter()
-            .filter(|(_, c)| c.category == ContactCategory::Service)
-            .cloned()
-            .collect();
-
-        if !service.is_empty() {
-            content = content.push(text::title4(fl!("contacts-service")));
-            content = content.push(card_grid(&service, flipped, editing, pending_delete));
+        for (group_name, group_contacts) in &by_group {
+            content = content.push(text::title4(group_name.clone()));
+            content = content.push(card_grid(group_contacts, flipped, editing, pending_delete));
         }
     }
 
