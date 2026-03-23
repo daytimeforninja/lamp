@@ -410,9 +410,14 @@ class CardDavClient(
                 result.add(remoteContact.copy(syncHref = href))
             }
 
-            // Keep unmatched local contacts
+            // Keep unmatched local contacts, but remove ones deleted on server
+            val remoteHrefs = remote.map { it.first }.toSet()
             for (localContact in local) {
                 if (localContact.id !in matched) {
+                    // If contact has a syncHref but it's not in remote, it was deleted on server
+                    if (localContact.syncHref != null && localContact.syncHref !in remoteHrefs) {
+                        continue // Skip — deleted on server
+                    }
                     result.add(localContact)
                 }
             }

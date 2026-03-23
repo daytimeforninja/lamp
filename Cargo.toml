@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
-description = "A COSMIC GTD task manager backed by org-mode files"
+description = "A GNOME GTD task manager backed by org-mode files"
 
 [lib]
 name = "lamp"
@@ -37,16 +37,11 @@ oo7 = "0.4"
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"
 rust-embed = "8"
-
-[dependencies.libcosmic]
-git = "https://github.com/pop-os/libcosmic.git"
-default-features = false
-features = ["about", "dbus-config", "tokio", "winit", "wgpu", "wayland"]
+relm4 = { version = "0.9", features = ["libadwaita"] }
+libadwaita = { version = "0.7", features = ["v1_4", "v1_5", "v1_6"] }
 
 [features]
-default = ["wayland", "wgpu"]
-wgpu = ["libcosmic/wgpu"]
-wayland = ["libcosmic/wayland"]
+default = []
 
 [profile.release]
 lto = true

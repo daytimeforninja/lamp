@@ -1,32 +1,38 @@
-use cosmic::iced::Length;
-use cosmic::widget::{container, scrollable, text};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
-use crate::components::task_row::{TaskRowCtx, task_grid};
+use crate::components::task_row::{task_grid, TaskRowCtx};
 use crate::core::task::Task;
 use crate::fl;
-use crate::message::Message;
+use crate::ui::{self, Sender};
 
 pub fn waiting_view(
     tasks: &[Task],
     ctx: &TaskRowCtx,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let waiting_tasks: Vec<&Task> = tasks
         .iter()
         .filter(|t| matches!(t.state, crate::core::task::TaskState::Waiting))
         .collect();
 
     if waiting_tasks.is_empty() {
-        return container(text::body(fl!("waiting-empty")))
-            .padding(32)
-            .center_x(Length::Fill)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
+        let empty_label = ui::body(&fl!("waiting-empty"));
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        empty_label.set_vexpand(true);
+        return ui::page_wrapper(&{
+            let b = ui::vbox(0);
+            b.append(&empty_label);
+            b
+        })
+        .upcast();
     }
 
-    container(scrollable(container(task_grid(waiting_tasks.into_iter(), ctx, None)).padding(16)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    let content = ui::vbox(8);
+    content.append(&task_grid(waiting_tasks.into_iter(), ctx, None, sender));
+
+    ui::page_wrapper(&content).upcast()
 }

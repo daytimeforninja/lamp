@@ -1,25 +1,25 @@
 use std::collections::HashSet;
 
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, row, scrollable, text};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::day_plan::DayPlan;
-use crate::core::list_item::ListItem;
 use crate::core::task::{Priority, Task, TaskState};
 use crate::fl;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
 const BUDGET_PRESETS: &[u32] = &[5, 10, 20, 30, 50, 75, 100];
 
-pub fn daily_planning_view<'a>(
+pub fn daily_planning_view(
     day_plan: &Option<DayPlan>,
     all_tasks: &[Task],
-    media_items: &[ListItem],
-    shopping_items: &[ListItem],
+    media_items: &[crate::core::list_item::ListItem],
+    shopping_tasks: &[Task],
     contexts: &[String],
     rejected: &HashSet<uuid::Uuid>,
-) -> Element<'a, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let budget = day_plan.as_ref().map(|dp| dp.spoon_budget).unwrap_or(50);
     let active_contexts: Vec<String> = day_plan
         .as_ref()
@@ -44,35 +44,47 @@ pub fn daily_planning_view<'a>(
         .unwrap_or(0);
     let remaining = budget.saturating_sub(spent);
 
-    let mut content = column().spacing(24).padding(16).width(Length::Fill);
+    let content = ui::vbox(24);
 
     // Section 1: Spoon Budget
-    content = content.push(text::title4("Spoon Budget"));
-    let mut budget_row = row().spacing(8);
+    content.append(&ui::title4("Spoon Budget"));
+    let budget_row = ui::hbox(8);
     for &preset in BUDGET_PRESETS {
         let btn = if budget == preset {
-            button::suggested(preset.to_string())
+            ui::suggested_button(&preset.to_string())
         } else {
-            button::standard(preset.to_string())
+            ui::standard_button(&preset.to_string())
         };
-        budget_row = budget_row.push(btn.on_press(Message::SetSpoonBudget(preset)));
+        {
+            let s = sender.clone();
+            btn.connect_clicked(move |_| {
+                s.emit(Message::SetSpoonBudget(preset));
+            });
+        }
+        budget_row.append(&btn);
     }
-    content = content.push(budget_row);
+    content.append(&budget_row);
 
     // Section 2: Active Contexts
-    content = content.push(text::title4("Active Contexts"));
-    let mut ctx_row = row().spacing(8);
+    content.append(&ui::title4("Active Contexts"));
+    let ctx_row = ui::hbox(8);
     for ctx in contexts {
         let is_active = active_contexts.contains(ctx);
         let btn = if is_active {
-            button::suggested(ctx.clone())
+            ui::suggested_button(ctx)
         } else {
-            button::standard(ctx.clone())
+            ui::standard_button(ctx)
         };
-        let ctx_owned = ctx.clone();
-        ctx_row = ctx_row.push(btn.on_press(Message::TogglePlanContext(ctx_owned)));
+        {
+            let s = sender.clone();
+            let ctx_owned = ctx.clone();
+            btn.connect_clicked(move |_| {
+                s.emit(Message::TogglePlanContext(ctx_owned.clone()));
+            });
+        }
+        ctx_row.append(&btn);
     }
-    content = content.push(ctx_row);
+    content.append(&ctx_row);
 
     // Section 3: Due / Scheduled Today
     let today = chrono::Local::now().date_naive();
@@ -86,8 +98,8 @@ pub fn daily_planning_view<'a>(
         .collect();
 
     if !due_today.is_empty() {
-        content = content.push(text::title4(fl!("planning-due-today")));
-        let mut due_col = column().spacing(4);
+        content.append(&ui::title4(&fl!("planning-due-today")));
+        let due_col = ui::vbox(4);
         for task in &due_today {
             let id = task.id;
             let is_confirmed = confirmed_ids.contains(&id);
@@ -102,54 +114,73 @@ pub fn daily_planning_view<'a>(
             let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
             let title_text = format!("{}{}{}", task.title, esc_text, date_badge);
 
-            let mut r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(title_text).width(Length::Fill));
+            let r = ui::centered_hbox(8);
+            let lbl = ui::body(&title_text);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+
             if is_confirmed {
-                r = r.push(button::standard("Remove").on_press(Message::UnconfirmTask(id)));
+                let btn = ui::standard_button("Remove");
+                {
+                    let s = sender.clone();
+                    btn.connect_clicked(move |_| {
+                        s.emit(Message::UnconfirmTask(id));
+                    });
+                }
+                r.append(&btn);
             } else {
-                r = r.push(button::suggested("Add").on_press(Message::ConfirmTask(id)));
+                let btn = ui::suggested_button("Add");
+                {
+                    let s = sender.clone();
+                    btn.connect_clicked(move |_| {
+                        s.emit(Message::ConfirmTask(id));
+                    });
+                }
+                r.append(&btn);
             }
-            due_col = due_col.push(r);
+            due_col.append(&r);
         }
-        content = content.push(due_col);
+        content.append(&due_col);
     }
 
     // Section 4: Suggestions
     let header_text = format!("Suggested tasks ({}/{} spoons spent)", spent, budget);
-    content = content.push(text::title4(header_text));
+    content.append(&ui::title4(&header_text));
 
     let suggestions = build_suggestions(all_tasks, &confirmed_ids, rejected, &active_contexts, remaining, today);
 
     if suggestions.is_empty() {
-        content = content.push(text::body("No more suggestions fit your remaining budget."));
+        content.append(&ui::body("No more suggestions fit your remaining budget."));
     } else {
-        let mut suggestion_col = column().spacing(4);
+        let suggestion_col = ui::vbox(4);
         for task in &suggestions {
             let id = task.id;
             let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
             let title_text = format!("{}{}", task.title, esc_text);
 
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(title_text).width(Length::Fill))
-                .push(
-                    button::suggested("Add")
-                        .on_press(Message::ConfirmTask(id)),
-                );
-            suggestion_col = suggestion_col.push(r);
+            let r = ui::centered_hbox(8);
+            let lbl = ui::body(&title_text);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+
+            let btn = ui::suggested_button("Add");
+            {
+                let s = sender.clone();
+                btn.connect_clicked(move |_| {
+                    s.emit(Message::ConfirmTask(id));
+                });
+            }
+            r.append(&btn);
+            suggestion_col.append(&r);
         }
-        content = content.push(suggestion_col);
+        content.append(&suggestion_col);
     }
 
-    // Section 4: Today's Plan
-    content = content.push(text::title4("Today's Plan"));
+    // Section 5: Today's Plan
+    content.append(&ui::title4("Today's Plan"));
 
-    // Confirmed tasks (sorted by ESC ascending, None last)
     if confirmed_ids.is_empty() {
-        content = content.push(text::body("No tasks confirmed yet."));
+        content.append(&ui::body("No tasks confirmed yet."));
     } else {
         let mut confirmed_tasks: Vec<&Task> = confirmed_ids
             .iter()
@@ -157,76 +188,105 @@ pub fn daily_planning_view<'a>(
             .collect();
         confirmed_tasks.sort_by_key(|t| t.esc.unwrap_or(u32::MAX));
 
-        let mut tasks_col = column().spacing(4);
+        let tasks_col = ui::vbox(4);
         for task in &confirmed_tasks {
             let id = task.id;
             let esc_text = task.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
             let done_marker = if task.state.is_done() { "[done] " } else { "" };
             let title_text = format!("{}{}{}", done_marker, task.title, esc_text);
 
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(title_text).width(Length::Fill))
-                .push(
-                    button::standard("Remove")
-                        .on_press(Message::UnconfirmTask(id)),
-                );
-            tasks_col = tasks_col.push(r);
+            let r = ui::centered_hbox(8);
+            let lbl = ui::body(&title_text);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+
+            let btn = ui::standard_button("Remove");
+            {
+                let s = sender.clone();
+                btn.connect_clicked(move |_| {
+                    s.emit(Message::UnconfirmTask(id));
+                });
+            }
+            r.append(&btn);
+            tasks_col.append(&r);
         }
-        content = content.push(tasks_col);
+        content.append(&tasks_col);
     }
 
     // Picked media items
-    content = content.push(text::caption("Media"));
-    let mut media_col = column().spacing(4);
+    content.append(&ui::caption("Media"));
+    let media_col = ui::vbox(4);
     for item in media_items {
         let id = item.id;
         let is_picked = picked_media.contains(&id);
-        let btn = if is_picked {
-            row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(item.title.clone()).width(Length::Fill))
-                .push(button::standard("Remove").on_press(Message::UnpickMediaItem(id)))
-        } else {
-            row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(item.title.clone()).width(Length::Fill))
-                .push(button::standard("Add").on_press(Message::PickMediaItem(id)))
-        };
-        media_col = media_col.push(btn);
-    }
-    content = content.push(media_col);
 
-    // Picked shopping items
-    content = content.push(text::caption("Shopping"));
-    let mut shopping_col = column().spacing(4);
-    for item in shopping_items {
-        let id = item.id;
-        let is_picked = picked_shopping.contains(&id);
-        let btn = if is_picked {
-            row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(item.title.clone()).width(Length::Fill))
-                .push(button::standard("Remove").on_press(Message::UnpickShoppingItem(id)))
-        } else {
-            row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::body(item.title.clone()).width(Length::Fill))
-                .push(button::standard("Add").on_press(Message::PickShoppingItem(id)))
-        };
-        shopping_col = shopping_col.push(btn);
-    }
-    content = content.push(shopping_col);
+        let r = ui::centered_hbox(8);
+        let lbl = ui::body(&item.title);
+        lbl.set_hexpand(true);
+        r.append(&lbl);
 
-    container(scrollable(content))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        if is_picked {
+            let btn = ui::standard_button("Remove");
+            {
+                let s = sender.clone();
+                btn.connect_clicked(move |_| {
+                    s.emit(Message::UnpickMediaItem(id));
+                });
+            }
+            r.append(&btn);
+        } else {
+            let btn = ui::standard_button("Add");
+            {
+                let s = sender.clone();
+                btn.connect_clicked(move |_| {
+                    s.emit(Message::PickMediaItem(id));
+                });
+            }
+            r.append(&btn);
+        }
+        media_col.append(&r);
+    }
+    content.append(&media_col);
+
+    // Picked shopping tasks
+    let active_shopping: Vec<&Task> = shopping_tasks.iter().filter(|t| !t.state.is_done()).collect();
+    if !active_shopping.is_empty() {
+        content.append(&ui::caption("Shopping"));
+        let shopping_col = ui::vbox(4);
+        for task in &active_shopping {
+            let id = task.id;
+            let is_picked = picked_shopping.contains(&id);
+
+            let r = ui::centered_hbox(8);
+            let lbl = ui::body(&task.title);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+
+            if is_picked {
+                let btn = ui::standard_button("Remove");
+                {
+                    let s = sender.clone();
+                    btn.connect_clicked(move |_| {
+                        s.emit(Message::UnpickShoppingItem(id));
+                    });
+                }
+                r.append(&btn);
+            } else {
+                let btn = ui::standard_button("Add");
+                {
+                    let s = sender.clone();
+                    btn.connect_clicked(move |_| {
+                        s.emit(Message::PickShoppingItem(id));
+                    });
+                }
+                r.append(&btn);
+            }
+            shopping_col.append(&r);
+        }
+        content.append(&shopping_col);
+    }
+
+    ui::page_wrapper(&content).upcast()
 }
 
 fn build_suggestions(

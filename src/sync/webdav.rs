@@ -2,7 +2,6 @@ use reqwest::{Client, Method, StatusCode};
 use std::path::Path;
 
 use crate::core::account::Account;
-use crate::core::list_item::ListItem;
 use crate::core::note::Note;
 use crate::org::{convert, writer::OrgWriter};
 
@@ -117,8 +116,10 @@ impl WebDavClient {
             .await
             .map_err(|e| format!("GET failed: {}", e))?;
 
-        if !resp.status().is_success() {
-            return Err(format!("GET {} returned {}", filename, resp.status()));
+        let status = resp.status();
+
+        if !status.is_success() {
+            return Err(format!("GET {} returned {}", filename, status));
         }
 
         let etag = resp
@@ -287,8 +288,12 @@ pub async fn sync_notes(
     let mut matched_filenames: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
-    // Process remote files
+    // Process remote files (skip non-UUID filenames like shopping.org, accounts.org)
     for remote in &remote_files {
+        let stem = remote.filename.trim_end_matches(".org");
+        if uuid::Uuid::parse_str(stem).is_err() {
+            continue; // Not a note file
+        }
         matched_filenames.insert(remote.filename.clone());
 
         if let Some(&local_note) = local_by_filename.get(&remote.filename) {
@@ -313,6 +318,27 @@ pub async fn sync_notes(
                         result
                             .errors
                             .push(format!("Failed to GET {}: {}", remote.filename, e));
+                    }
+                }
+            } else {
+                // Etag matches (remote unchanged) — check if local was edited
+                let current_content = OrgWriter::write_note_file(local_note);
+                let disk_path = notes_dir.join(&remote.filename);
+                let disk_content = std::fs::read_to_string(&disk_path).unwrap_or_default();
+                if current_content != disk_content {
+                    // Local note was modified — push update
+                    match client.put_file(&remote.filename, &current_content).await {
+                        Ok(etag) => {
+                            let mut pushed_note = local_note.clone();
+                            pushed_note.sync_etag = etag;
+                            result.pulled.push(pushed_note);
+                            result.pushed += 1;
+                        }
+                        Err(e) => {
+                            result
+                                .errors
+                                .push(format!("Failed to PUT {}: {}", remote.filename, e));
+                        }
                     }
                 }
             }
@@ -379,25 +405,6 @@ pub async fn sync_notes(
     Ok(result)
 }
 
-/// Sync shopping items as a single org file on WebDAV.
-///
-/// Strategy: pull remote, merge by UUID (remote wins for conflicts,
-/// keep local-only items), push merged result back.
-pub async fn sync_shopping(
-    client: &WebDavClient,
-    local_items: &[ListItem],
-) -> Result<FileSyncResult<ListItem>, String> {
-    sync_single_file(
-        client,
-        "shopping.org",
-        local_items,
-        |items| OrgWriter::write_list_items_file("Shopping", items),
-        |content| convert::parse_list_items(content),
-        |item| item.id,
-    )
-    .await
-}
-
 /// Sync accounts as a single org file on WebDAV.
 pub async fn sync_accounts(
     client: &WebDavClient,
@@ -433,25 +440,31 @@ async fn sync_single_file<T: Clone>(
             pulled = items.len();
             items
         }
-        Err(_) => Vec::new(), // File doesn't exist remotely yet
+        Err(e) => {
+            log::info!("WebDAV GET {} (new file or error): {}", filename, e);
+            Vec::new()
+        }
     };
 
     // Merge: remote items win for matching UUIDs, keep local-only items
     let remote_ids: std::collections::HashSet<uuid::Uuid> =
         remote_items.iter().map(&get_id).collect();
-    let mut merged = remote_items;
+    let mut merged = remote_items.clone();
     for item in local_items {
         if !remote_ids.contains(&get_id(item)) {
             merged.push(item.clone());
         }
     }
 
-    // Push merged result
-    let content = serialize(&merged);
-    if let Err(e) = client.put_file(filename, &content).await {
-        log::warn!("Failed to PUT {}: {}", filename, e);
-    } else {
-        pushed = 1;
+    // Push if the merged content differs from the remote content
+    let merged_content = serialize(&merged);
+    let remote_content = serialize(&remote_items);
+    if merged_content != remote_content {
+        if let Err(e) = client.put_file(filename, &merged_content).await {
+            log::warn!("Failed to PUT {}: {}", filename, e);
+        } else {
+            pushed = 1;
+        }
     }
 
     log::info!(

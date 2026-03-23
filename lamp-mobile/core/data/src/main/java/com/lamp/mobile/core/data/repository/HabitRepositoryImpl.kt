@@ -43,6 +43,9 @@ class HabitRepositoryImpl @Inject constructor(
     }
 
     override suspend fun saveHabitOnly(habit: Habit) {
+        // Also stamp completions into task so they sync via X-LAMP-LOGBOOK
+        val taskWithLogbook = habit.task.copy(logbookEntries = habit.completions)
+        taskDao.upsert(taskWithLogbook.toEntity(syncDirty = true, location = "habits"))
         habitDao.upsert(habit.toEntity())
     }
 

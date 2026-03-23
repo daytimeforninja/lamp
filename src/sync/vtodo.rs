@@ -1,3 +1,5 @@
+use std::hash::Hasher;
+
 use chrono::{NaiveDate, NaiveDateTime};
 use uuid::Uuid;
 
@@ -319,33 +321,63 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
 }
 
 /// Compute a deterministic content hash for a task (for change detection).
-/// Uses a string-based approach so the hash is stable across Rust versions and compilations.
+/// Uses raw byte writes (no length prefixes) to match the Kotlin mobile StableHasher API.
 pub fn task_content_hash(task: &Task) -> u64 {
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
 
     let mut hasher = StableHasher::new();
-    task.title.hash(&mut hasher);
-    task.state.as_keyword().hash(&mut hasher);
-    task.priority.map(|p| p.as_org()).hash(&mut hasher);
-    task.contexts.hash(&mut hasher);
-    task.scheduled.map(|d| d.to_string()).hash(&mut hasher);
-    task.deadline.map(|d| d.to_string()).hash(&mut hasher);
-    task.notes.hash(&mut hasher);
-    task.project.hash(&mut hasher);
-    task.waiting_for.hash(&mut hasher);
-    task.esc.hash(&mut hasher);
-    task.delegated.map(|d| d.to_string()).hash(&mut hasher);
-    task.follow_up.map(|d| d.to_string()).hash(&mut hasher);
-    task.recurrence.as_ref().map(|r| r.to_string()).hash(&mut hasher);
-    task.extra_tags.hash(&mut hasher);
+    // Match Kotlin's writeString: just raw UTF-8 bytes
+    hasher.write(task.title.as_bytes());
+    hasher.write(task.state.as_keyword().as_bytes());
+    // Match Kotlin's writeOptionalString: 0x00 for None, 0x01 + bytes for Some
+    write_optional_string(&mut hasher, task.priority.map(|p| p.as_org().to_string()).as_deref());
+    for ctx in &task.contexts {
+        hasher.write(ctx.as_bytes());
+    }
+    write_optional_string(&mut hasher, task.scheduled.map(|d| d.to_string()).as_deref());
+    write_optional_string(&mut hasher, task.deadline.map(|d| d.to_string()).as_deref());
+    hasher.write(task.notes.as_bytes());
+    write_optional_string(&mut hasher, task.project.as_deref());
+    write_optional_string(&mut hasher, task.waiting_for.as_deref());
+    write_optional_int(&mut hasher, task.esc);
+    write_optional_string(&mut hasher, task.delegated.map(|d| d.to_string()).as_deref());
+    write_optional_string(&mut hasher, task.follow_up.map(|d| d.to_string()).as_deref());
+    write_optional_string(&mut hasher, task.recurrence.as_ref().map(|r| r.to_string()).as_deref());
+    for tag in &task.extra_tags {
+        hasher.write(tag.as_bytes());
+    }
     for entry in &task.logbook_entries {
-        entry.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
+        hasher.write(entry.format("%Y-%m-%dT%H:%M:%S").to_string().as_bytes());
     }
     for (start, end) in &task.clock_entries {
-        start.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
-        end.format("%Y-%m-%dT%H:%M:%S").to_string().hash(&mut hasher);
+        hasher.write(start.format("%Y-%m-%dT%H:%M:%S").to_string().as_bytes());
+        hasher.write(end.format("%Y-%m-%dT%H:%M:%S").to_string().as_bytes());
     }
     hasher.finish()
+}
+
+fn write_optional_string(hasher: &mut StableHasher, s: Option<&str>) {
+    match s {
+        Some(s) => {
+            hasher.write(&[1]);
+            hasher.write(s.as_bytes());
+        }
+        None => {
+            hasher.write(&[0]);
+        }
+    }
+}
+
+fn write_optional_int(hasher: &mut StableHasher, v: Option<u32>) {
+    match v {
+        Some(v) => {
+            hasher.write(&[1]);
+            hasher.write(v.to_string().as_bytes());
+        }
+        None => {
+            hasher.write(&[0]);
+        }
+    }
 }
 
 /// A simple FNV-1a hasher that produces deterministic results across Rust versions.

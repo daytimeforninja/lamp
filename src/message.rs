@@ -4,7 +4,6 @@ use crate::config::CalendarPurpose;
 use crate::fl;
 use crate::core::account::Account;
 use crate::core::link::LinkTarget;
-use crate::core::list_item::ListItem;
 use crate::core::task::{Priority, TaskState};
 use crate::sync::caldav::CalendarInfo;
 use crate::sync::carddav::Contact;
@@ -155,7 +154,7 @@ pub enum Message {
     AddNoteLink(Uuid, LinkTarget),
     RemoveNoteLink(Uuid, LinkTarget),
     OpenNoteInEditor(Uuid),
-    NoteEditorAction(cosmic::widget::text_editor::Action),
+    NoteBodyChanged(String),
     NoteLinkSearchChanged(String),
 
     // Daily Planning
@@ -229,7 +228,6 @@ pub enum Message {
     ServiceConnectionTested(ServiceKind, Result<String, String>, Vec<CalendarInfo>),
     SetCalendarPurpose(String, CalendarPurpose),
     SyncNotesCompleted(Result<NoteSyncResult, String>),
-    SyncShoppingCompleted(Result<FileSyncResult<ListItem>, String>),
     SyncAccountsCompleted(Result<FileSyncResult<Account>, String>),
     ContactsFetched(Result<Vec<Contact>, String>),
     ContactDeleted(Result<(), String>),
@@ -272,6 +270,9 @@ pub enum Message {
     DeleteConflict(usize),
     AcceptRemoteState(usize),
     AcceptLocalState(usize),
+
+    // Navigation (GTK)
+    NavigateTo(WhatPage),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,13 +1,12 @@
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::NaiveDate;
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, icon, row, scrollable, text, text_input};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::application::EventForm;
 use crate::components::habit_chart::habit_chart;
-use crate::components::month_calendar::{MonthCalendarState, month_calendar};
+use crate::components::month_calendar::{month_calendar_view, MonthCalendarState};
 use crate::components::task_row::{task_grid, TaskRowCtx};
 use crate::core::event::CalendarEvent;
 use crate::core::habit::Habit;
@@ -15,6 +14,7 @@ use crate::core::task::Task;
 use crate::fl;
 use crate::message::Message;
 use crate::sync::caldav::CalendarInfo;
+use crate::ui::{self, Sender};
 
 struct DayItems<'a> {
     events: Vec<&'a CalendarEvent>,
@@ -47,9 +47,10 @@ pub fn agenda_view(
     events: &[CalendarEvent],
     event_form: Option<&EventForm>,
     ctx: &TaskRowCtx,
-    discovered_calendars: &[CalendarInfo],
-    month_state: &MonthCalendarState,
-) -> Element<'static, Message> {
+    calendars: &[CalendarInfo],
+    month_calendar_state: &MonthCalendarState,
+    sender: &Sender,
+) -> gtk::Widget {
     let today = chrono::Local::now().date_naive();
     let horizon = today + chrono::Duration::days(30);
 
@@ -109,7 +110,7 @@ pub fn agenda_view(
     let total_items = overdue_tasks.len()
         + days.values().map(|d| d.events.len() + d.scheduled_tasks.len() + d.deadline_tasks.len() + d.habits.len()).sum::<usize>();
 
-    // Build busy days set from the day-grouped items
+    // Build busy days set
     let mut busy_days: HashSet<NaiveDate> = HashSet::new();
     for (date, items) in &days {
         if !items.is_empty() {
@@ -125,52 +126,38 @@ pub fn agenda_view(
         }
     }
 
-    let mut content = column().spacing(16);
+    let content = ui::vbox(16);
 
     // Month calendar widget
-    content = content.push(month_calendar(month_state, &busy_days, today, events, tasks));
+    let cal_widget = month_calendar_view(month_calendar_state, events, tasks, habits, sender);
+    content.append(&cal_widget);
 
     // Add Event button
-    content = content.push(
-        row()
-            .push(
-                button::suggested(fl!("agenda-add-event"))
-                    .on_press(Message::CreateEvent),
-            ),
-    );
+    content.append(&ui::button_with_signal(&fl!("agenda-add-event"), Some("suggested-action"), Message::CreateEvent, sender));
 
     // Event form (inline when present)
     if let Some(form) = event_form {
-        content = content.push(event_form_view(form.clone(), discovered_calendars.to_vec()));
+        content.append(&event_form_view(form, calendars, sender));
     }
 
     if total_items == 0 && event_form.is_none() {
-        return container(
-            column()
-                .spacing(16)
-                .push(
-                    button::suggested(fl!("agenda-add-event"))
-                        .on_press(Message::CreateEvent),
-                )
-                .push(
-                    text::body(fl!("agenda-empty"))
-                )
-                .padding(32)
-                .width(Length::Fill),
-        )
-        .center_x(Length::Fill)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
+        let empty_content = ui::vbox(16);
+        empty_content.set_margin_top(32);
+        empty_content.set_hexpand(true);
+        empty_content.set_halign(gtk::Align::Center);
+        empty_content.append(&ui::button_with_signal(&fl!("agenda-add-event"), Some("suggested-action"), Message::CreateEvent, sender));
+        empty_content.append(&ui::body(&fl!("agenda-empty")));
+        content.append(&empty_content);
+        return ui::page_wrapper(&content).upcast();
     }
 
     // Overdue section
     if !overdue_tasks.is_empty() {
-        let mut section = column().spacing(4);
-        section = section.push(text::title4(fl!("agenda-overdue")));
+        let section = ui::vbox(4);
+        section.append(&ui::title4(&fl!("agenda-overdue")));
         let overdue_owned: Vec<Task> = overdue_tasks.iter().map(|t| (*t).clone()).collect();
-        section = section.push(task_grid(overdue_owned.iter(), ctx, None));
-        content = content.push(section);
+        section.append(&task_grid(overdue_owned.iter(), ctx, None, sender));
+        content.append(&section);
     }
 
     // Day sections
@@ -180,38 +167,35 @@ pub fn agenda_view(
         }
 
         let header = format_day_header(*date, today);
-        let mut section = column().spacing(4);
-        section = section.push(text::title4(header));
+        let section = ui::vbox(4);
+        section.append(&ui::title4(&header));
 
         // Events
         for event in &day_items.events {
-            section = section.push(event_row(event));
+            section.append(&event_row(event, sender));
         }
 
         // Scheduled tasks
         if !day_items.scheduled_tasks.is_empty() {
             let owned: Vec<Task> = day_items.scheduled_tasks.iter().map(|t| (*t).clone()).collect();
-            section = section.push(task_grid(owned.iter(), ctx, None));
+            section.append(&task_grid(owned.iter(), ctx, None, sender));
         }
 
         // Deadline tasks
         if !day_items.deadline_tasks.is_empty() {
             let owned: Vec<Task> = day_items.deadline_tasks.iter().map(|t| (*t).clone()).collect();
-            section = section.push(task_grid(owned.iter(), ctx, None));
+            section.append(&task_grid(owned.iter(), ctx, None, sender));
         }
 
         // Habits
         for habit in &day_items.habits {
-            section = section.push(habit_chart(habit));
+            section.append(&habit_chart(habit, sender));
         }
 
-        content = content.push(section);
+        content.append(&section);
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }
 
 fn format_day_header(date: NaiveDate, today: NaiveDate) -> String {
@@ -226,7 +210,7 @@ fn format_day_header(date: NaiveDate, today: NaiveDate) -> String {
     }
 }
 
-fn event_row(event: &CalendarEvent) -> Element<'static, Message> {
+fn event_row(event: &CalendarEvent, sender: &Sender) -> gtk::Box {
     let time_str = if event.all_day {
         "All day".to_string()
     } else {
@@ -241,144 +225,164 @@ fn event_row(event: &CalendarEvent) -> Element<'static, Message> {
 
     let id = event.id;
 
-    row()
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .push(
-            text::body(time_str)
-                .width(Length::Fixed(56.0)),
-        )
-        .push(
-            icon::from_name("x-office-calendar-symbolic")
-                .size(16)
-                .icon(),
-        )
-        .push(
-            text::body(event.title.clone())
-                .width(Length::Fill),
-        )
-        .push(text::caption(cal_label))
-        .push(
-            button::icon(icon::from_name("document-edit-symbolic"))
-                .on_press(Message::EditEvent(id)),
-        )
-        .push(
-            button::icon(icon::from_name("edit-delete-symbolic"))
-                .on_press(Message::DeleteEvent(id)),
-        )
-        .into()
+    let row = ui::centered_hbox(8);
+
+    let time_lbl = ui::body(&time_str);
+    time_lbl.set_width_request(56);
+    row.append(&time_lbl);
+
+    let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+    icon.set_pixel_size(16);
+    row.append(&icon);
+
+    let title_lbl = ui::body(&event.title);
+    title_lbl.set_hexpand(true);
+    row.append(&title_lbl);
+
+    row.append(&ui::caption(&cal_label));
+
+    row.append(&ui::icon_button_with_signal("document-edit-symbolic", Message::EditEvent(id), sender));
+    row.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::DeleteEvent(id), sender));
+
+    row
 }
 
 fn event_form_view(
-    form: EventForm,
-    discovered_calendars: Vec<CalendarInfo>,
-) -> Element<'static, Message> {
-    let mut content = column().spacing(8);
+    form: &EventForm,
+    discovered_calendars: &[CalendarInfo],
+    sender: &Sender,
+) -> gtk::Box {
+    let content = ui::vbox(8);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
 
-    content = content.push(text::title4(if form.editing.is_some() {
+    let form_title = if form.editing.is_some() {
         fl!("agenda-event-edit")
     } else {
         fl!("agenda-add-event")
-    }));
-
-    // Clone all strings so they're owned by the closures / widgets
-    let title = form.title.clone();
-    let start_date = form.start_date.clone();
-    let start_time = form.start_time.clone();
-    let end_date = form.end_date.clone();
-    let end_time = form.end_time.clone();
-    let location = form.location.clone();
-    let description = form.description.clone();
-    let calendar_href = form.calendar_href.clone();
+    };
+    content.append(&ui::title4(&form_title));
 
     // Title
-    content = content.push(
-        text_input::text_input(fl!("agenda-event-title"), title)
-            .on_input(Message::SetEventTitle)
-            .width(Length::Fill),
-    );
+    let title_entry = ui::entry(&fl!("agenda-event-title"), &form.title);
+    {
+        let s = sender.clone();
+        title_entry.connect_changed(move |e| {
+            s.emit(Message::SetEventTitle(e.text().to_string()));
+        });
+    }
+    content.append(&title_entry);
 
     // All day toggle
-    content = content.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(text::body(fl!("agenda-event-all-day")).width(Length::Fill))
-            .push(
-                cosmic::widget::toggler(form.all_day)
-                    .on_toggle(Message::SetEventAllDay),
-            ),
-    );
+    let all_day_row = ui::centered_hbox(8);
+    let all_day_label = ui::body(&fl!("agenda-event-all-day"));
+    all_day_label.set_hexpand(true);
+    all_day_row.append(&all_day_label);
+    let all_day_switch = gtk::Switch::new();
+    all_day_switch.set_active(form.all_day);
+    {
+        let s = sender.clone();
+        all_day_switch.connect_state_set(move |_, state| {
+            s.emit(Message::SetEventAllDay(state));
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    all_day_row.append(&all_day_switch);
+    content.append(&all_day_row);
 
     // Start
-    content = content.push(text::caption(fl!("agenda-event-start")));
+    content.append(&ui::caption(&fl!("agenda-event-start")));
     if form.all_day {
-        content = content.push(
-            text_input::text_input(fl!("event-date-placeholder"), start_date.clone())
-                .on_input(|v| Message::SetEventStart(v))
-                .width(Length::Fill),
-        );
+        let start_entry = ui::entry(&fl!("event-date-placeholder"), &form.start_date);
+        {
+            let s = sender.clone();
+            start_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventStart(e.text().to_string()));
+            });
+        }
+        content.append(&start_entry);
     } else {
-        content = content.push(
-            row()
-                .spacing(8)
-                .push(
-                    text_input::text_input(fl!("event-date-placeholder"), start_date.clone())
-                        .on_input(|v| Message::SetEventStart(v))
-                        .width(Length::Fill),
-                )
-                .push(
-                    text_input::text_input(fl!("event-time-placeholder"), start_time.clone())
-                        .on_input(|v| Message::SetEventStartTime(v))
-                        .width(Length::Fixed(80.0)),
-                ),
-        );
+        let start_row = ui::hbox(8);
+        let start_date_entry = ui::entry(&fl!("event-date-placeholder"), &form.start_date);
+        {
+            let s = sender.clone();
+            start_date_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventStart(e.text().to_string()));
+            });
+        }
+        start_row.append(&start_date_entry);
+        let start_time_entry = ui::entry(&fl!("event-time-placeholder"), &form.start_time);
+        start_time_entry.set_width_request(80);
+        start_time_entry.set_hexpand(false);
+        {
+            let s = sender.clone();
+            start_time_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventStartTime(e.text().to_string()));
+            });
+        }
+        start_row.append(&start_time_entry);
+        content.append(&start_row);
     }
     if let Some(ref err) = form.start_error {
-        content = content.push(text::caption(err.clone()).size(11.0));
+        content.append(&ui::caption(err));
     }
 
     // End
-    content = content.push(text::caption(fl!("agenda-event-end")));
+    content.append(&ui::caption(&fl!("agenda-event-end")));
     if form.all_day {
-        content = content.push(
-            text_input::text_input(fl!("event-date-placeholder"), end_date.clone())
-                .on_input(|v| Message::SetEventEnd(v))
-                .width(Length::Fill),
-        );
+        let end_entry = ui::entry(&fl!("event-date-placeholder"), &form.end_date);
+        {
+            let s = sender.clone();
+            end_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventEnd(e.text().to_string()));
+            });
+        }
+        content.append(&end_entry);
     } else {
-        content = content.push(
-            row()
-                .spacing(8)
-                .push(
-                    text_input::text_input(fl!("event-date-placeholder"), end_date.clone())
-                        .on_input(|v| Message::SetEventEnd(v))
-                        .width(Length::Fill),
-                )
-                .push(
-                    text_input::text_input(fl!("event-time-placeholder"), end_time.clone())
-                        .on_input(|v| Message::SetEventEndTime(v))
-                        .width(Length::Fixed(80.0)),
-                ),
-        );
+        let end_row = ui::hbox(8);
+        let end_date_entry = ui::entry(&fl!("event-date-placeholder"), &form.end_date);
+        {
+            let s = sender.clone();
+            end_date_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventEnd(e.text().to_string()));
+            });
+        }
+        end_row.append(&end_date_entry);
+        let end_time_entry = ui::entry(&fl!("event-time-placeholder"), &form.end_time);
+        end_time_entry.set_width_request(80);
+        end_time_entry.set_hexpand(false);
+        {
+            let s = sender.clone();
+            end_time_entry.connect_changed(move |e| {
+                s.emit(Message::SetEventEndTime(e.text().to_string()));
+            });
+        }
+        end_row.append(&end_time_entry);
+        content.append(&end_row);
     }
     if let Some(ref err) = form.end_error {
-        content = content.push(text::caption(err.clone()).size(11.0));
+        content.append(&ui::caption(err));
     }
 
     // Location
-    content = content.push(
-        text_input::text_input(fl!("agenda-event-location"), location)
-            .on_input(Message::SetEventLocation)
-            .width(Length::Fill),
-    );
+    let loc_entry = ui::entry(&fl!("agenda-event-location"), &form.location);
+    {
+        let s = sender.clone();
+        loc_entry.connect_changed(move |e| {
+            s.emit(Message::SetEventLocation(e.text().to_string()));
+        });
+    }
+    content.append(&loc_entry);
 
     // Description
-    content = content.push(
-        text_input::text_input(fl!("agenda-event-description"), description)
-            .on_input(Message::SetEventDescription)
-            .width(Length::Fill),
-    );
+    let desc_entry = ui::entry(&fl!("agenda-event-description"), &form.description);
+    {
+        let s = sender.clone();
+        desc_entry.connect_changed(move |e| {
+            s.emit(Message::SetEventDescription(e.text().to_string()));
+        });
+    }
+    content.append(&desc_entry);
 
     // Calendar dropdown
     let event_cals: Vec<&CalendarInfo> = discovered_calendars
@@ -387,14 +391,16 @@ fn event_form_view(
         .collect();
     if !event_cals.is_empty() {
         let cal_names: Vec<String> = event_cals.iter().map(|c| c.display_name.clone()).collect();
-        let selected = event_cals.iter().position(|c| c.href == calendar_href);
+        let selected = event_cals.iter().position(|c| c.href == form.calendar_href);
         let hrefs: Vec<String> = event_cals.iter().map(|c| c.href.clone()).collect();
-        content = content.push(
-            cosmic::widget::dropdown(cal_names, selected, move |idx| {
-                Message::SetEventCalendar(hrefs[idx].clone())
-            })
-            .width(Length::Fill),
+        let dd = ui::dropdown_with_signal(
+            &cal_names,
+            selected,
+            move |idx| Message::SetEventCalendar(hrefs[idx].clone()),
+            sender,
         );
+        dd.set_hexpand(true);
+        content.append(&dd);
     }
 
     // Save / Cancel buttons
@@ -404,21 +410,10 @@ fn event_form_view(
         Message::SubmitEvent
     };
 
-    content = content.push(
-        row()
-            .spacing(8)
-            .push(
-                button::suggested(fl!("agenda-event-save"))
-                    .on_press(save_msg),
-            )
-            .push(
-                button::standard(fl!("agenda-event-cancel"))
-                    .on_press(Message::CancelEventForm),
-            ),
-    );
+    let btn_row = ui::hbox(8);
+    btn_row.append(&ui::button_with_signal(&fl!("agenda-event-save"), Some("suggested-action"), save_msg, sender));
+    btn_row.append(&ui::button_with_signal(&fl!("agenda-event-cancel"), None, Message::CancelEventForm, sender));
+    content.append(&btn_row);
 
-    container(content)
-        .padding(12)
-        .width(Length::Fill)
-        .into()
+    content
 }
