@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 
 use chrono::Duration;
-use cosmic::iced::Length;
-use cosmic::widget::{checkbox, column, container, scrollable, text};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::habit::Habit;
 use crate::core::project::Project;
 use crate::core::task::{Task, TaskState};
 use crate::fl;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
 /// A task is "unprocessed" (belongs in inbox) if it's Todo without a project.
 /// This matches the inbox page's `is_inbox_task` definition.
@@ -22,8 +22,9 @@ pub fn review_view(
     projects: &[Project],
     habits: &[Habit],
     checked: &HashSet<usize>,
-) -> Element<'static, Message> {
-    let mut content = column().spacing(16);
+    sender: &Sender,
+) -> gtk::Widget {
+    let content = ui::vbox(16);
     let today = chrono::Local::now().naive_local();
     let today_date = chrono::Local::now().date_naive();
 
@@ -71,35 +72,33 @@ pub fn review_view(
 
     let total_steps: usize = 9;
 
-    // ── Phase 1: Get Clear ──
-    content = content.push(text::title3(fl!("review-phase-clear")));
+    // -- Phase 1: Get Clear --
+    content.append(&ui::title3(&fl!("review-phase-clear")));
 
     // Step 0: Process inbox
-    content = content.push(review_step(0, &fl!("review-step-inbox"), checked));
-    content = content.push(
-        text::body(fl!(
-            "review-inbox-count",
-            count = inbox_count.to_string()
-        ))
-        .size(13.0),
-    );
+    content.append(&review_step(0, &fl!("review-step-inbox"), checked, sender));
+    let inbox_label = ui::caption(&fl!(
+        "review-inbox-count",
+        count = inbox_count.to_string()
+    ));
+    content.append(&inbox_label);
 
     // Step 1: Review captured notes
-    content = content.push(review_step(1, &fl!("review-step-notes"), checked));
+    content.append(&review_step(1, &fl!("review-step-notes"), checked, sender));
 
-    // ── Phase 2: Get Current ──
-    content = content.push(text::title3(fl!("review-phase-current")));
+    // -- Phase 2: Get Current --
+    content.append(&ui::title3(&fl!("review-phase-current")));
 
     // Step 2: Review Next Actions
-    content = content.push(review_step(2, &fl!("review-step-next"), checked));
-    content = content.push(
-        text::body(format!("{} next actions", next_count)).size(13.0),
-    );
+    content.append(&review_step(2, &fl!("review-step-next"), checked, sender));
+    let next_label = ui::caption(&format!("{} next actions", next_count));
+    content.append(&next_label);
 
     // Step 3: Review Waiting For
-    content = content.push(review_step(3, &fl!("review-step-waiting"), checked));
+    content.append(&review_step(3, &fl!("review-step-waiting"), checked, sender));
     if !waiting_tasks.is_empty() {
-        let mut waiting_col = column().spacing(2).padding([0, 0, 0, 28]);
+        let waiting_col = ui::vbox(2);
+        waiting_col.set_margin_start(28);
         for task in &waiting_tasks {
             let days = (today - task.created).num_days();
             let mut label = fl!(
@@ -119,61 +118,62 @@ pub fn review_view(
                 };
                 label.push_str(&fu_label);
             }
-            waiting_col = waiting_col.push(text::body(label).size(13.0));
+            waiting_col.append(&ui::caption(&label));
         }
-        content = content.push(waiting_col);
+        content.append(&waiting_col);
     }
 
     // Step 4: Review projects for next actions
-    content = content.push(review_step(4, &fl!("review-step-projects"), checked));
+    content.append(&review_step(4, &fl!("review-step-projects"), checked, sender));
     if !stuck_projects.is_empty() {
-        let mut stuck_col = column().spacing(2).padding([0, 0, 0, 28]);
+        let stuck_col = ui::vbox(2);
+        stuck_col.set_margin_start(28);
         for project in &stuck_projects {
-            stuck_col = stuck_col.push(
-                text::body(format!("{} — stuck", project.name)).size(13.0),
-            );
+            stuck_col.append(&ui::caption(&format!("{} — stuck", project.name)));
         }
-        content = content.push(stuck_col);
+        content.append(&stuck_col);
     }
 
     // Step 5: Review Someday/Maybe
-    content = content.push(review_step(5, &fl!("review-step-someday"), checked));
+    content.append(&review_step(5, &fl!("review-step-someday"), checked, sender));
     if !someday_tasks.is_empty() {
-        let mut someday_col = column().spacing(2).padding([0, 0, 0, 28]);
+        let someday_col = ui::vbox(2);
+        someday_col.set_margin_start(28);
         for task in &someday_tasks {
-            someday_col = someday_col.push(text::body(task.title.clone()).size(13.0));
+            someday_col.append(&ui::caption(&task.title));
         }
-        content = content.push(someday_col);
+        content.append(&someday_col);
     }
 
-    // ── Phase 3: Get Creative ──
-    content = content.push(text::title3(fl!("review-phase-creative")));
+    // -- Phase 3: Get Creative --
+    content.append(&ui::title3(&fl!("review-phase-creative")));
 
     // Step 6: Review upcoming calendar
-    content = content.push(review_step(6, &fl!("review-step-calendar"), checked));
+    content.append(&review_step(6, &fl!("review-step-calendar"), checked, sender));
     if !upcoming_tasks.is_empty() {
-        let mut upcoming_col = column().spacing(2).padding([0, 0, 0, 28]);
+        let upcoming_col = ui::vbox(2);
+        upcoming_col.set_margin_start(28);
         for task in &upcoming_tasks {
             let date = match task.scheduled.or(task.deadline) {
                 Some(d) => d,
                 None => continue,
             };
             let label = format!("{} — {}", date.format("%b %d"), task.title);
-            upcoming_col = upcoming_col.push(text::body(label).size(13.0));
+            upcoming_col.append(&ui::caption(&label));
         }
-        content = content.push(upcoming_col);
+        content.append(&upcoming_col);
     }
 
     // Step 7: Capture new ideas
-    content = content.push(review_step(7, &fl!("review-step-capture"), checked));
+    content.append(&review_step(7, &fl!("review-step-capture"), checked, sender));
 
     // Step 8: Review goals and horizons
-    content = content.push(review_step(8, &fl!("review-step-horizons"), checked));
+    content.append(&review_step(8, &fl!("review-step-horizons"), checked, sender));
 
     // Habit completion this week (informational, not a checklist step)
     if !habits.is_empty() {
-        let mut habit_section = column().spacing(2);
-        habit_section = habit_section.push(text::title4(fl!("review-habits-week")));
+        let habit_section = ui::vbox(2);
+        habit_section.append(&ui::title4(&fl!("review-habits-week")));
         let week_start = today - Duration::days(7);
         for habit in habits {
             let completions_this_week = habit
@@ -182,27 +182,25 @@ pub fn review_view(
                 .filter(|dt| **dt >= week_start)
                 .count();
             let label = format!("{}: {}/7", habit.task.title, completions_this_week);
-            habit_section = habit_section.push(text::body(label).size(13.0));
+            habit_section.append(&ui::caption(&label));
         }
-        content = content.push(habit_section);
+        content.append(&habit_section);
     }
 
     // Completion message
     let checked_count = checked.len();
     if checked_count == total_steps {
-        content = content.push(text::title4(fl!("review-complete")));
+        content.append(&ui::title4(&fl!("review-complete")));
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }
 
-fn review_step(idx: usize, label: &str, checked: &HashSet<usize>) -> Element<'static, Message> {
+fn review_step(idx: usize, label: &str, checked: &HashSet<usize>, sender: &Sender) -> gtk::Box {
     let is_checked = checked.contains(&idx);
-    let step_idx = idx;
-    checkbox(label.to_string(), is_checked)
-        .on_toggle(move |_| Message::ToggleReviewStep(step_idx))
-        .into()
+    let row = ui::centered_hbox(8);
+    let cb = ui::check_button_with_signal(is_checked, Message::ToggleReviewStep(idx), sender);
+    cb.set_label(Some(label));
+    row.append(&cb);
+    row
 }

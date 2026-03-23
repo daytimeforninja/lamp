@@ -1,13 +1,10 @@
-use cosmic::widget::{button, text};
-use cosmic::{Element, theme};
-
-use crate::message::Message;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 /// Render a context tag chip (e.g., @home, @work, @errands).
 #[allow(dead_code)]
-pub fn context_tag(ctx: &str) -> Element<'static, Message> {
-    button::custom(text::caption(ctx.to_string()).size(11.0))
-        .padding([2, 8])
-        .class(theme::Button::Text)
-        .into()
+pub fn context_tag(tag: &str) -> gtk::Button {
+    let btn = gtk::Button::with_label(tag);
+    btn.add_css_class("flat");
+    btn
 }

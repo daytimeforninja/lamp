@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_VERSION: u64 = 2;
@@ -64,7 +63,7 @@ pub struct CalendarAssignment {
     pub purpose: CalendarPurpose,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, CosmicConfigEntry)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LampConfig {
     pub org_directory: PathBuf,
     pub contexts: Vec<String>,
@@ -104,6 +103,165 @@ impl Default for LampConfig {
 }
 
 impl LampConfig {
+    /// Load config from JSON file, migrating from COSMIC config if needed.
+    pub fn load() -> Self {
+        let path = Self::config_path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => {
+                // Try migrating from COSMIC config
+                let mut config = Self::migrate_from_cosmic().unwrap_or_default();
+                config.save();
+                config
+            }
+        }
+    }
+
+    /// Migrate config from COSMIC desktop config system (RON format per-field files).
+    fn migrate_from_cosmic() -> Option<Self> {
+        let cosmic_dir = dirs::config_dir()?.join("cosmic/dev.lamp.app/v2");
+        if !cosmic_dir.exists() {
+            return None;
+        }
+        log::info!("Migrating config from COSMIC: {}", cosmic_dir.display());
+
+        let mut config = Self::default();
+
+        // Helper to read a COSMIC config file
+        let read_field = |name: &str| -> Option<String> {
+            std::fs::read_to_string(cosmic_dir.join(name)).ok()
+        };
+
+        // org_directory: stored as quoted RON string
+        if let Some(val) = read_field("org_directory") {
+            let trimmed = val.trim().trim_matches('"');
+            if !trimmed.is_empty() {
+                config.org_directory = PathBuf::from(trimmed);
+            }
+        }
+
+        // browser_command: quoted RON string
+        if let Some(val) = read_field("browser_command") {
+            let trimmed = val.trim().trim_matches('"');
+            if !trimmed.is_empty() {
+                config.browser_command = trimmed.to_string();
+            }
+        }
+
+        // debug_logging: RON bool
+        if let Some(val) = read_field("debug_logging") {
+            config.debug_logging = val.trim() == "true";
+        }
+
+        // contexts: RON list of quoted strings
+        if let Some(val) = read_field("contexts") {
+            let mut contexts = Vec::new();
+            for line in val.lines() {
+                let trimmed = line.trim().trim_matches(',').trim().trim_matches('"');
+                if trimmed.starts_with('@') {
+                    contexts.push(trimmed.to_string());
+                }
+            }
+            if !contexts.is_empty() {
+                config.contexts = contexts;
+            }
+        }
+
+        // calendars: RON struct (url, username)
+        if let Some(val) = read_field("calendars") {
+            config.calendars = parse_ron_service_config(&val);
+        }
+
+        // contacts: RON struct (url, username)
+        if let Some(val) = read_field("contacts") {
+            config.contacts = parse_ron_service_config(&val);
+        }
+
+        // notes_sync: RON struct (url, username)
+        if let Some(val) = read_field("notes_sync") {
+            config.notes_sync = parse_ron_service_config(&val);
+        }
+
+        // imap: RON struct (host, username, imap_folder)
+        if let Some(val) = read_field("imap") {
+            for line in val.lines() {
+                let line = line.trim().trim_end_matches(',');
+                if let Some(v) = line.strip_prefix("host:") {
+                    config.imap.host = v.trim().trim_matches('"').to_string();
+                } else if let Some(v) = line.strip_prefix("username:") {
+                    config.imap.username = v.trim().trim_matches('"').to_string();
+                } else if let Some(v) = line.strip_prefix("imap_folder:") {
+                    config.imap.folder = v.trim().trim_matches('"').to_string();
+                }
+            }
+        }
+
+        // calendar_assignments: RON list of structs
+        if let Some(val) = read_field("calendar_assignments") {
+            let mut assignments = Vec::new();
+            let mut current_href = String::new();
+            for line in val.lines() {
+                let line = line.trim().trim_end_matches(',');
+                if let Some(v) = line.strip_prefix("calendar_href:") {
+                    current_href = v.trim().trim_matches('"').to_string();
+                } else if let Some(v) = line.strip_prefix("purpose:") {
+                    let purpose = match v.trim() {
+                        "Tasks" => CalendarPurpose::Tasks,
+                        "Events" => CalendarPurpose::Events,
+                        _ => CalendarPurpose::Disabled,
+                    };
+                    if !current_href.is_empty() {
+                        assignments.push(CalendarAssignment {
+                            calendar_href: current_href.clone(),
+                            purpose,
+                        });
+                    }
+                }
+            }
+            config.calendar_assignments = assignments;
+        }
+
+        // sync_tokens: RON map
+        if let Some(val) = read_field("sync_tokens") {
+            for line in val.lines() {
+                let line = line.trim().trim_end_matches(',');
+                // Format: "key": "value"
+                if let Some((k, v)) = line.split_once(':') {
+                    let k = k.trim().trim_matches('"');
+                    let v = v.trim().trim_matches('"');
+                    if k.starts_with('/') {
+                        config.sync_tokens.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+
+        Some(config)
+    }
+
+    /// Save config to JSON file.
+    pub fn save(&self) {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::error!("Failed to save config: {}", e);
+                }
+            }
+            Err(e) => log::error!("Failed to serialize config: {}", e),
+        }
+    }
+
+    fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("lamp")
+            .join("config.json")
+    }
+
     pub fn inbox_path(&self) -> PathBuf {
         self.org_directory.join("inbox.org")
     }
@@ -213,12 +371,6 @@ impl LampConfig {
                 .any(|a| a.purpose != CalendarPurpose::Disabled)
     }
 
-    /// Whether all sync tokens are empty (no prior sync).
-    #[cfg(test)]
-    fn sync_token_count(&self) -> usize {
-        self.sync_tokens.len()
-    }
-
     /// Ensure the org directory and files exist.
     pub fn ensure_files(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.org_directory)?;
@@ -265,6 +417,20 @@ impl LampConfig {
     }
 }
 
+/// Parse a RON-format ServiceConfig struct: `( url: "...", username: "..." )`
+fn parse_ron_service_config(ron: &str) -> ServiceConfig {
+    let mut cfg = ServiceConfig::default();
+    for line in ron.lines() {
+        let line = line.trim().trim_end_matches(',');
+        if let Some(v) = line.strip_prefix("url:") {
+            cfg.url = v.trim().trim_matches('"').to_string();
+        } else if let Some(v) = line.strip_prefix("username:") {
+            cfg.username = v.trim().trim_matches('"').to_string();
+        }
+    }
+    cfg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,16 +450,11 @@ mod tests {
         config.set_sync_token("/cal/1", "token-a");
         assert_eq!(config.get_sync_token("/cal/1"), Some("token-a"));
 
-        // Update existing
         config.set_sync_token("/cal/1", "token-b");
         assert_eq!(config.get_sync_token("/cal/1"), Some("token-b"));
 
-        // No duplicates
-        assert_eq!(config.sync_token_count(), 1);
-
-        // Second calendar
         config.set_sync_token("/cal/2", "token-c");
-        assert_eq!(config.sync_token_count(), 2);
+        assert_eq!(config.sync_tokens.len(), 2);
     }
 
     #[test]
@@ -315,12 +476,12 @@ mod tests {
         assert!(!config.sync_ready());
 
         config.calendars.url = "https://cal.example.com".into();
-        assert!(!config.sync_ready()); // no assignments
+        assert!(!config.sync_ready());
 
         config.calendar_assignments = vec![
             CalendarAssignment { calendar_href: "/a".into(), purpose: CalendarPurpose::Disabled },
         ];
-        assert!(!config.sync_ready()); // only disabled
+        assert!(!config.sync_ready());
 
         config.calendar_assignments.push(
             CalendarAssignment { calendar_href: "/b".into(), purpose: CalendarPurpose::Tasks },

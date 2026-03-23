@@ -1,15 +1,16 @@
-use cosmic::iced::Length;
-use cosmic::widget::{column, container, row, scrollable, text, text_input};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::task::Task;
 use crate::fl;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
 pub fn archive_view(
     tasks: &[Task],
     search: &str,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let lq = search.to_lowercase();
     let mut filtered: Vec<&Task> = if lq.is_empty() {
         tasks.iter().collect()
@@ -23,101 +24,74 @@ pub fn archive_view(
     // Sort by completion date, newest first
     filtered.sort_by(|a, b| b.completed.cmp(&a.completed));
 
-    let search_input = text_input::text_input(
-        fl!("search-placeholder"),
-        search.to_string(),
-    )
-    .on_input(Message::ArchiveSearchChanged)
-    .width(Length::Fill);
+    let content = ui::vbox(8);
+
+    // Search input
+    let search_entry = ui::entry(&fl!("search-placeholder"), search);
+    {
+        let s = sender.clone();
+        search_entry.connect_changed(move |e| {
+            s.emit(Message::ArchiveSearchChanged(e.text().to_string()));
+        });
+    }
+    search_entry.set_margin_start(16);
+    search_entry.set_margin_end(16);
+    content.append(&search_entry);
 
     if filtered.is_empty() {
-        let msg = if search.is_empty() {
-            fl!("archive-empty")
+        let (title, desc) = if search.is_empty() {
+            ("No Archived Tasks", "Completed tasks will appear here")
         } else {
-            fl!("archive-no-results")
+            ("No Results", "Try a different search term")
         };
-        return container(
-            column()
-                .spacing(8)
-                .push(container(search_input).padding([0, 16]))
-                .push(
-                    container(text::body(msg))
-                        .padding(32)
-                        .center_x(Length::Fill)
-                        .width(Length::Fill),
-                ),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
+        content.append(&ui::status_page("document-open-recent-symbolic", title, desc));
+
+        return ui::scrolled(&content).upcast();
     }
 
-    let count_label = text::caption(format!(
-        "{} {}",
-        filtered.len(),
-        fl!("archive-count-suffix")
-    ));
+    // Count label
+    let count_text = format!("{} {}", filtered.len(), fl!("archive-count-suffix"));
+    let count_label = ui::caption(&count_text);
+    count_label.set_margin_start(16);
+    count_label.set_margin_end(16);
+    content.append(&count_label);
 
-    let rows: Vec<Element<'static, Message>> = filtered
-        .iter()
-        .map(|task| {
-            let title = task.title.clone();
-            let state_label = format!("{:?}", task.state);
-            let completed_str = task
-                .completed
-                .map(|d| d.format("%Y-%m-%d").to_string())
-                .unwrap_or_default();
-            let project_str = task.project.clone().unwrap_or_default();
-            let contexts_str = task.contexts.join(", ");
+    // Task list
+    let list = ui::vbox(0);
 
-            let mut info_parts: Vec<Element<'static, Message>> = Vec::new();
+    for task in &filtered {
+        let row_box = ui::vbox(2);
+        row_box.set_margin_start(16);
+        row_box.set_margin_end(16);
+        row_box.set_margin_top(8);
+        row_box.set_margin_bottom(8);
 
-            // State badge
-            info_parts.push(
-                container(text::caption(state_label))
-                    .padding([2, 6])
-                    .into(),
-            );
+        // Title
+        row_box.append(&ui::body(&task.title));
 
-            // Completed date
-            if !completed_str.is_empty() {
-                info_parts.push(text::caption(completed_str).into());
-            }
+        // Info row: state, date, project, contexts
+        let info_row = ui::hbox(8);
 
-            // Project
-            if !project_str.is_empty() {
-                info_parts.push(text::caption(format!("[{}]", project_str)).into());
-            }
+        let state_label = ui::caption(&format!("{:?}", task.state));
+        info_row.append(&state_label);
 
-            // Contexts
-            if !contexts_str.is_empty() {
-                info_parts.push(text::caption(contexts_str).into());
-            }
+        if let Some(completed) = task.completed {
+            info_row.append(&ui::caption(&completed.format("%Y-%m-%d").to_string()));
+        }
 
-            let info_row = row::with_children(info_parts).spacing(8);
+        if let Some(ref project) = task.project {
+            info_row.append(&ui::caption(&format!("[{}]", project)));
+        }
 
-            container(
-                column()
-                    .spacing(2)
-                    .push(text::body(title))
-                    .push(info_row),
-            )
-            .padding([8, 16])
-            .width(Length::Fill)
-            .into()
-        })
-        .collect();
+        if !task.contexts.is_empty() {
+            info_row.append(&ui::caption(&task.contexts.join(", ")));
+        }
 
-    let list = column::with_children(rows).spacing(0);
+        row_box.append(&info_row);
+        list.append(&row_box);
+    }
 
-    container(
-        column()
-            .spacing(8)
-            .push(container(search_input).padding([0, 16]))
-            .push(container(count_label).padding([0, 16]))
-            .push(scrollable(container(list).padding([0, 0]))),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    content.append(&ui::scrolled(&list));
+
+    content.upcast()
 }

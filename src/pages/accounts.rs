@@ -1,11 +1,11 @@
 use chrono::Local;
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, icon, row, scrollable, text, text_input};
-use cosmic::{Element, theme};
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::account::Account;
 use crate::fl;
 use crate::message::{AccountField, Message};
+use crate::ui::{self, Sender};
 
 fn last_checked_text(account: &Account) -> String {
     match account.last_checked {
@@ -22,153 +22,175 @@ fn account_row(
     index: usize,
     expanded: bool,
     confirming_delete: bool,
-) -> Element<'static, Message> {
-    let name_text = text::body(account.name.clone());
+    sender: &Sender,
+) -> gtk::Box {
+    let col = ui::vbox(0);
 
-    let url_badge: Element<'static, Message> = if !account.url.is_empty() {
-        let label = account.url.clone();
-        button::custom(text::caption(label).size(11.0))
-            .padding([0, 0])
-            .class(theme::Button::Text)
-            .on_press(Message::OpenAccountUrl(index))
-            .into()
-    } else {
-        text::caption("").into()
-    };
+    // Summary row
+    let summary_row = ui::centered_hbox(8);
 
-    let last_text = text::caption(last_checked_text(account)).size(11.0);
+    // Clickable name
+    let name_btn = ui::flat_button(&account.name);
+    {
+        let s = sender.clone();
+        name_btn.connect_clicked(move |_| {
+            s.emit(Message::ToggleAccountExpand(index));
+        });
+    }
+    summary_row.append(&name_btn);
 
-    let title_btn = button::custom(name_text)
-        .padding([0, 0])
-        .class(theme::Button::Text)
-        .on_press(Message::ToggleAccountExpand(index));
-
-    let mut summary_row = row()
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .push(title_btn)
-        .push(url_badge)
-        .push(container(last_text).width(Length::Fill));
-
-    if confirming_delete {
-        summary_row = summary_row
-            .push(
-                button::destructive(fl!("btn-delete"))
-                    .on_press(Message::DeleteAccount(index)),
-            )
-            .push(
-                button::standard(fl!("btn-cancel"))
-                    .on_press(Message::CancelDeleteAccount),
-            );
-    } else {
-        summary_row = summary_row.push(
-            button::icon(icon::from_name("edit-delete-symbolic"))
-                .on_press(Message::ConfirmDeleteAccount(index)),
-        );
+    // URL badge
+    if !account.url.is_empty() {
+        let url_btn = ui::flat_button(&account.url);
+        {
+            let s = sender.clone();
+            url_btn.connect_clicked(move |_| {
+                s.emit(Message::OpenAccountUrl(index));
+            });
+        }
+        summary_row.append(&url_btn);
     }
 
-    let mut col = column().push(summary_row);
+    // Last checked
+    let last_lbl = ui::caption(&last_checked_text(account));
+    last_lbl.set_hexpand(true);
+    summary_row.append(&last_lbl);
+
+    // Delete
+    if confirming_delete {
+        summary_row.append(&ui::button_with_signal(&fl!("btn-delete"), Some("destructive-action"), Message::DeleteAccount(index), sender));
+        summary_row.append(&ui::button_with_signal(&fl!("btn-cancel"), None, Message::CancelDeleteAccount, sender));
+    } else {
+        summary_row.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::ConfirmDeleteAccount(index), sender));
+    }
+
+    col.append(&summary_row);
 
     if expanded {
-        let mut detail = column().spacing(6).padding([4, 0, 8, 24]);
+        let detail = ui::vbox(6);
+        detail.set_margin_start(24);
+        detail.set_margin_top(4);
+        detail.set_margin_bottom(8);
 
         // Name
-        detail = detail.push(
-            row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption(fl!("accounts-name"))).width(Length::Fixed(80.0)))
-                .push(
-                    text_input::text_input(fl!("accounts-name-placeholder"), account.name.clone())
-                        .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Name, v))
-                        .on_submit(move |_| Message::ToggleAccountExpand(index))
-                        .width(Length::Fill),
-                ),
-        );
+        let name_row = ui::centered_hbox(8);
+        let name_label = ui::caption(&fl!("accounts-name"));
+        name_label.set_width_request(80);
+        name_row.append(&name_label);
+        let name_entry = ui::entry(&fl!("accounts-name-placeholder"), &account.name);
+        {
+            let s = sender.clone();
+            name_entry.connect_changed(move |e| {
+                s.emit(Message::SetAccountFieldValue(index, AccountField::Name, e.text().to_string()));
+            });
+        }
+        {
+            let s = sender.clone();
+            name_entry.connect_activate(move |_| {
+                s.emit(Message::ToggleAccountExpand(index));
+            });
+        }
+        name_row.append(&name_entry);
+        detail.append(&name_row);
 
         // URL
-        detail = detail.push(
-            row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption(fl!("accounts-url"))).width(Length::Fixed(80.0)))
-                .push(
-                    text_input::text_input(fl!("contacts-url-placeholder"), account.url.clone())
-                        .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Url, v))
-                        .on_submit(move |_| Message::ToggleAccountExpand(index))
-                        .width(Length::Fill),
-                )
-                .push(
-                    button::icon(icon::from_name("web-browser-symbolic"))
-                        .on_press(Message::OpenAccountUrl(index)),
-                ),
-        );
+        let url_row = ui::centered_hbox(8);
+        let url_label = ui::caption(&fl!("accounts-url"));
+        url_label.set_width_request(80);
+        url_row.append(&url_label);
+        let url_entry = ui::entry(&fl!("contacts-url-placeholder"), &account.url);
+        {
+            let s = sender.clone();
+            url_entry.connect_changed(move |e| {
+                s.emit(Message::SetAccountFieldValue(index, AccountField::Url, e.text().to_string()));
+            });
+        }
+        {
+            let s = sender.clone();
+            url_entry.connect_activate(move |_| {
+                s.emit(Message::ToggleAccountExpand(index));
+            });
+        }
+        url_row.append(&url_entry);
+        url_row.append(&ui::icon_button_with_signal("web-browser-symbolic", Message::OpenAccountUrl(index), sender));
+        detail.append(&url_row);
 
         // Notes
-        detail = detail.push(
-            row().spacing(8).align_y(Alignment::Center)
-                .push(container(text::caption(fl!("accounts-notes"))).width(Length::Fixed(80.0)))
-                .push(
-                    text_input::text_input(fl!("accounts-notes-placeholder"), account.notes.clone())
-                        .on_input(move |v| Message::SetAccountFieldValue(index, AccountField::Notes, v))
-                        .on_submit(move |_| Message::ToggleAccountExpand(index))
-                        .width(Length::Fill),
-                ),
-        );
+        let notes_row = ui::centered_hbox(8);
+        let notes_label = ui::caption(&fl!("accounts-notes"));
+        notes_label.set_width_request(80);
+        notes_row.append(&notes_label);
+        let notes_entry = ui::entry(&fl!("accounts-notes-placeholder"), &account.notes);
+        {
+            let s = sender.clone();
+            notes_entry.connect_changed(move |e| {
+                s.emit(Message::SetAccountFieldValue(index, AccountField::Notes, e.text().to_string()));
+            });
+        }
+        {
+            let s = sender.clone();
+            notes_entry.connect_activate(move |_| {
+                s.emit(Message::ToggleAccountExpand(index));
+            });
+        }
+        notes_row.append(&notes_entry);
+        detail.append(&notes_row);
 
         // Mark checked button
-        detail = detail.push(
-            button::standard(fl!("accounts-mark-checked"))
-                .on_press(Message::MarkAccountChecked(index)),
-        );
+        detail.append(&ui::button_with_signal(&fl!("accounts-mark-checked"), None, Message::MarkAccountChecked(index), sender));
 
-        col = col.push(detail);
+        col.append(&detail);
     }
 
-    col.into()
+    col
 }
 
 pub fn accounts_view(
-    accounts: &[(usize, &Account)],
+    accounts: &[Account],
     account_input: &str,
-    expanded_account: Option<usize>,
+    expanded: Option<usize>,
     pending_delete: Option<usize>,
-) -> Element<'static, Message> {
-    let mut content = column().spacing(12);
+    sender: &Sender,
+) -> gtk::Widget {
+    let content = ui::vbox(12);
 
     // Add account input row
-    let input = text_input::text_input(fl!("accounts-placeholder"), account_input.to_string())
-        .on_input(Message::AccountInputChanged)
-        .on_submit(|_| Message::AccountSubmit)
-        .width(Length::Fill);
-
-    content = content.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(input)
-            .push(
-                button::icon(icon::from_name("list-add-symbolic"))
-                    .on_press(Message::AccountSubmit),
-            ),
-    );
+    let input_row = ui::centered_hbox(8);
+    let entry = ui::entry(&fl!("accounts-placeholder"), account_input);
+    {
+        let s = sender.clone();
+        entry.connect_changed(move |e| {
+            s.emit(Message::AccountInputChanged(e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        entry.connect_activate(move |_| {
+            s.emit(Message::AccountSubmit);
+        });
+    }
+    input_row.append(&entry);
+    input_row.append(&ui::icon_button_with_signal("list-add-symbolic", Message::AccountSubmit, sender));
+    content.append(&input_row);
 
     if accounts.is_empty() {
-        content = content.push(
-            container(text::body(fl!("accounts-empty")))
-                .padding(32)
-                .center_x(Length::Fill)
-                .width(Length::Fill),
-        );
+        let empty_label = ui::body(&fl!("accounts-empty"));
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        content.append(&empty_label);
     } else {
-        for &(idx, account) in accounts {
-            content = content.push(account_row(
+        for (idx, account) in accounts.iter().enumerate() {
+            content.append(&account_row(
                 account,
                 idx,
-                expanded_account == Some(idx),
+                expanded == Some(idx),
                 pending_delete == Some(idx),
+                sender,
             ));
         }
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }

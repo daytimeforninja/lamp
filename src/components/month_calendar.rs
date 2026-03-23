@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 
 use chrono::{Datelike, NaiveDate, Weekday};
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, row, text};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::event::CalendarEvent;
+use crate::core::habit::Habit;
 use crate::core::task::Task;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
 #[derive(Debug, Clone)]
 pub struct MonthCalendarState {
@@ -54,49 +55,69 @@ impl MonthCalendarState {
 }
 
 /// Render a month calendar grid widget with an optional detail panel for the selected day.
-pub fn month_calendar<'a>(
+pub fn month_calendar_view(
     state: &MonthCalendarState,
-    busy_days: &HashSet<NaiveDate>,
-    today: NaiveDate,
     events: &[CalendarEvent],
     tasks: &[Task],
-) -> Element<'a, Message> {
+    _habits: &[Habit],
+    sender: &Sender,
+) -> gtk::Widget {
+    let today = chrono::Local::now().date_naive();
     let first = state.displayed_month;
     let year = first.year();
     let month = first.month();
 
+    // Collect busy days (days with events or tasks)
+    let mut busy_days = HashSet::new();
+    for e in events {
+        busy_days.insert(e.start.date());
+    }
+    for t in tasks {
+        if !t.state.is_done() {
+            if let Some(d) = t.scheduled {
+                busy_days.insert(d);
+            }
+            if let Some(d) = t.deadline {
+                busy_days.insert(d);
+            }
+        }
+    }
+
     // Header: < Month Year >
     let month_label = first.format("%B %Y").to_string();
 
-    let header = row()
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .push(
-            button::icon(cosmic::widget::icon::from_name("go-previous-symbolic"))
-                .on_press(Message::CalendarPrevMonth),
-        )
-        .push(
-            text::body(month_label)
-                .width(Length::Fill)
-                .center(),
-        )
-        .push(
-            button::icon(cosmic::widget::icon::from_name("go-next-symbolic"))
-                .on_press(Message::CalendarNextMonth),
-        );
+    let header = ui::centered_hbox(8);
+    let prev_btn = ui::icon_button_with_signal(
+        "go-previous-symbolic",
+        Message::CalendarPrevMonth,
+        sender,
+    );
+    header.append(&prev_btn);
+
+    let month_text = ui::body(&month_label);
+    month_text.set_hexpand(true);
+    month_text.set_halign(gtk::Align::Center);
+    header.append(&month_text);
+
+    let next_btn = ui::icon_button_with_signal(
+        "go-next-symbolic",
+        Message::CalendarNextMonth,
+        sender,
+    );
+    header.append(&next_btn);
 
     // Day labels: Mo Tu We Th Fr Sa Su
-    let day_labels = row()
-        .spacing(0)
-        .push(day_label("Mo"))
-        .push(day_label("Tu"))
-        .push(day_label("We"))
-        .push(day_label("Th"))
-        .push(day_label("Fr"))
-        .push(day_label("Sa"))
-        .push(day_label("Su"));
+    let day_labels_row = ui::hbox(0);
+    for lbl in &["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] {
+        let l = ui::caption(lbl);
+        l.set_hexpand(true);
+        l.set_halign(gtk::Align::Center);
+        day_labels_row.append(&l);
+    }
 
-    let mut grid = column().spacing(2).push(header).push(day_labels);
+    let grid = ui::vbox(2);
+    grid.append(&header);
+    grid.append(&day_labels_row);
 
     // Find the Monday on or before the first of the month
     let weekday_offset = match first.weekday() {
@@ -112,7 +133,7 @@ pub fn month_calendar<'a>(
 
     // Render 6 rows of 7 days
     for week in 0..6 {
-        let mut week_row = row().spacing(0);
+        let week_row = ui::hbox(0);
         let mut any_in_month = false;
 
         for day_of_week in 0..7 {
@@ -123,82 +144,74 @@ pub fn month_calendar<'a>(
                 any_in_month = true;
             }
 
-            let cell: Element<'a, Message> = if !in_month {
-                container(text::body(" "))
-                    .width(Length::FillPortion(1))
-                    .center_x(Length::FillPortion(1))
-                    .into()
+            if !in_month {
+                let spacer = gtk::Label::new(Some(" "));
+                spacer.set_hexpand(true);
+                week_row.append(&spacer);
             } else {
                 let day_num = date.day().to_string();
                 let is_today = date == today;
                 let is_busy = busy_days.contains(&date);
                 let is_selected = state.selected_day == Some(date);
 
-                let label = if is_busy {
-                    format!("{}\n·", day_num)
+                let label_text = if is_busy {
+                    format!("{}\n\u{00B7}", day_num)
                 } else {
                     format!("{}\n ", day_num)
                 };
 
-                let txt = if is_today {
-                    text::body(label).font(cosmic::iced::Font {
-                        weight: cosmic::iced::font::Weight::Bold,
-                        ..Default::default()
-                    })
-                } else {
-                    text::body(label)
-                };
+                let btn = gtk::Button::with_label(&label_text);
+                btn.set_hexpand(true);
+                btn.add_css_class("flat");
 
-                let cell_content = container(txt.center())
-                    .center_x(Length::Fill);
+                if is_today {
+                    btn.add_css_class("accent");
+                }
+                if is_selected {
+                    btn.add_css_class("suggested-action");
+                }
 
-                let btn = if is_selected {
-                    button::custom(cell_content)
-                        .class(cosmic::theme::Button::Suggested)
-                        .on_press(Message::CalendarSelectDay(date))
-                        .width(Length::FillPortion(1))
-                } else {
-                    button::custom(cell_content)
-                        .class(cosmic::theme::Button::Text)
-                        .on_press(Message::CalendarSelectDay(date))
-                        .width(Length::FillPortion(1))
-                };
+                {
+                    let s = sender.clone();
+                    btn.connect_clicked(move |_| {
+                        s.emit(Message::CalendarSelectDay(date));
+                    });
+                }
 
-                btn.into()
-            };
-
-            week_row = week_row.push(cell);
+                week_row.append(&btn);
+            }
         }
 
         if any_in_month {
-            grid = grid.push(week_row);
+            grid.append(&week_row);
         }
     }
 
-    let mut content = column().spacing(8).push(
-        container(grid)
-            .width(Length::Fill)
-            .padding(8),
-    );
+    let content = ui::vbox(8);
+    grid.set_margin_start(8);
+    grid.set_margin_end(8);
+    grid.set_margin_top(8);
+    grid.set_margin_bottom(8);
+    content.append(&grid);
 
     // Detail panel for selected day
     if let Some(selected) = state.selected_day {
-        for item in day_detail(selected, today, events, tasks) {
-            content = content.push(item);
+        for widget in day_detail(selected, today, events, tasks) {
+            content.append(&widget);
         }
     }
 
-    content.into()
+    content.upcast()
 }
 
 /// Render a compact detail panel for the selected day's events and tasks.
-fn day_detail<'a>(
+fn day_detail(
     date: NaiveDate,
     today: NaiveDate,
     events: &[CalendarEvent],
     tasks: &[Task],
-) -> Vec<Element<'a, Message>> {
-    let mut items: Vec<Element<'a, Message>> = Vec::new();
+) -> Vec<gtk::Widget> {
+    let mut items: Vec<gtk::Widget> = Vec::new();
 
     let header = if date == today {
         format!("Today, {}", date.format("%A %b %e"))
@@ -227,26 +240,29 @@ fn day_detail<'a>(
         return items;
     }
 
-    items.push(text::title4(header).into());
+    items.push(ui::title4(&header).upcast());
 
     for event in &day_events {
         let time_str = if event.all_day {
             "All day".to_string()
         } else {
-            format!("{} – {}", event.start.format("%H:%M"), event.end.format("%H:%M"))
+            format!("{} \u{2013} {}", event.start.format("%H:%M"), event.end.format("%H:%M"))
         };
 
-        let mut r = row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(text::caption(time_str).width(Length::Fixed(100.0)))
-            .push(text::body(event.title.clone()).width(Length::Fill));
+        let r = ui::centered_hbox(8);
+        let time_label = ui::caption(&time_str);
+        time_label.set_size_request(100, -1);
+        r.append(&time_label);
+
+        let title_label = ui::body(&event.title);
+        title_label.set_hexpand(true);
+        r.append(&title_label);
 
         if !event.location.is_empty() {
-            r = r.push(text::caption(event.location.clone()));
+            r.append(&ui::caption(&event.location));
         }
 
-        items.push(r.into());
+        items.push(r.upcast());
     }
 
     for task in &day_tasks {
@@ -255,22 +271,18 @@ fn day_detail<'a>(
         } else {
             "Scheduled"
         };
-        items.push(
-            row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(text::caption(prefix).width(Length::Fixed(100.0)))
-                .push(text::body(task.title.clone()).width(Length::Fill))
-                .into(),
-        );
+
+        let r = ui::centered_hbox(8);
+        let prefix_label = ui::caption(prefix);
+        prefix_label.set_size_request(100, -1);
+        r.append(&prefix_label);
+
+        let title_label = ui::body(&task.title);
+        title_label.set_hexpand(true);
+        r.append(&title_label);
+
+        items.push(r.upcast());
     }
 
     items
-}
-
-fn day_label(label: &str) -> Element<'_, Message> {
-    container(text::caption(label).center())
-        .width(Length::FillPortion(1))
-        .center_x(Length::FillPortion(1))
-        .into()
 }

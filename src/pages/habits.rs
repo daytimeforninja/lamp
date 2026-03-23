@@ -1,56 +1,63 @@
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, icon, row, scrollable, text, text_input};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::components::habit_chart::habit_chart;
 use crate::core::habit::Habit;
 use crate::fl;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
-pub fn habits_view<'a>(habits: &[Habit], habit_input: &str) -> Element<'a, Message> {
-    let mut content = column().spacing(12);
+pub fn habits_view(
+    habits: &[Habit],
+    habit_input: &str,
+    sender: &Sender,
+) -> gtk::Widget {
+    let content = ui::vbox(12);
 
     // Creation input
-    let input = text_input::text_input(fl!("habits-new-placeholder"), habit_input.to_string())
-        .on_input(Message::HabitInputChanged)
-        .on_submit(|_| Message::HabitSubmit)
-        .width(Length::Fill);
+    let input_row = ui::hbox(8);
+    input_row.set_valign(gtk::Align::Center);
 
-    content = content.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(input)
-            .push(
-                button::icon(icon::from_name("list-add-symbolic"))
-                    .on_press(Message::HabitSubmit),
-            ),
-    );
+    let entry = ui::entry(&fl!("habits-new-placeholder"), habit_input);
+    {
+        let s = sender.clone();
+        entry.connect_changed(move |e| {
+            s.emit(Message::HabitInputChanged(e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        entry.connect_activate(move |_| {
+            s.emit(Message::HabitSubmit);
+        });
+    }
+    input_row.append(&entry);
+    input_row.append(&ui::icon_button_with_signal(
+        "list-add-symbolic",
+        Message::HabitSubmit,
+        sender,
+    ));
+    content.append(&input_row);
 
     if habits.is_empty() {
-        content = content.push(
-            container(text::body(fl!("habits-empty")))
-                .padding(32)
-                .center_x(Length::Fill)
-                .width(Length::Fill),
-        );
+        content.append(&ui::status_page("checkbox-checked-symbolic", &fl!("habits-empty"), "Add a daily habit to get started"));
     } else {
         for habit in habits {
-            let delete_btn = button::icon(icon::from_name("edit-delete-symbolic"))
-                .on_press(Message::DeleteHabit(habit.task.id));
+            let row = ui::centered_hbox(8);
 
-            let habit_row = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(container(habit_chart(habit)).width(Length::Fill))
-                .push(delete_btn);
+            let chart = habit_chart(habit, sender);
+            chart.set_hexpand(true);
+            row.append(&chart);
 
-            content = content.push(habit_row);
+            row.append(&ui::icon_button_with_signal(
+                "edit-delete-symbolic",
+                Message::DeleteHabit(habit.task.id),
+                sender,
+            ));
+
+            content.append(&row);
         }
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }

@@ -1,26 +1,33 @@
-use cosmic::iced::Length;
-use cosmic::widget::{container, scrollable, text};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
-use crate::components::task_row::{TaskRowCtx, task_grid};
+use crate::components::task_row::{task_grid, TaskRowCtx};
 use crate::core::task::Task;
 use crate::fl;
-use crate::message::{Message, SortColumn};
+use crate::message::SortColumn;
+use crate::ui::{self, Sender};
 
 pub fn all_tasks_view(
     tasks: &[Task],
     ctx: &TaskRowCtx,
     sort: Option<(SortColumn, bool)>,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let mut active: Vec<&Task> = tasks.iter().filter(|t| t.state.is_active()).collect();
 
     if active.is_empty() {
-        return container(text::body(fl!("all-tasks-empty")))
-            .padding(32)
-            .center_x(Length::Fill)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
+        let empty_label = ui::body(&fl!("all-tasks-empty"));
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        empty_label.set_vexpand(true);
+        return ui::page_wrapper(&{
+            let b = ui::vbox(0);
+            b.append(&empty_label);
+            b
+        })
+        .upcast();
     }
 
     if let Some((col, ascending)) = sort {
@@ -29,7 +36,13 @@ pub fn all_tasks_view(
                 SortColumn::State => {
                     fn rank(t: &Task) -> u8 {
                         use crate::core::task::TaskState::*;
-                        match t.state { Next => 0, Todo => 1, Waiting => 2, Someday => 3, _ => 4 }
+                        match t.state {
+                            Next => 0,
+                            Todo => 1,
+                            Waiting => 2,
+                            Someday => 3,
+                            _ => 4,
+                        }
                     }
                     rank(a).cmp(&rank(b))
                 }
@@ -53,8 +66,8 @@ pub fn all_tasks_view(
         });
     }
 
-    container(scrollable(container(task_grid(active.into_iter(), ctx, Some(sort))).padding(16)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    let content = ui::vbox(8);
+    content.append(&task_grid(active.into_iter(), ctx, Some(sort), sender));
+
+    ui::page_wrapper(&content).upcast()
 }

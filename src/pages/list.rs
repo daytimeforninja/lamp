@@ -1,40 +1,41 @@
 use std::collections::{HashMap, HashSet};
 
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, flex_row, icon, row, scrollable, text, text_input};
-use cosmic::{Element, theme};
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 use uuid::Uuid;
 
 use crate::core::list_item::ListItem;
+use crate::core::task::Task;
+use crate::fl;
 use crate::message::{ListKind, Message};
-
-const CARD_WIDTH: f32 = 280.0;
+use crate::ui::{self, Sender};
 
 fn done_label(kind: ListKind) -> String {
     match kind {
-        ListKind::Media => crate::fl!("list-consumed"),
-        ListKind::Shopping => crate::fl!("list-bought"),
+        ListKind::Media => fl!("list-consumed"),
+        ListKind::Shopping => fl!("list-bought"),
     }
 }
 
-fn card_front(item: &ListItem, kind: ListKind) -> Element<'static, Message> {
-    let mut col = column().spacing(4);
+fn card_front(item: &ListItem, kind: ListKind) -> gtk::Box {
+    let col = ui::vbox(4);
 
     if item.done {
-        col = col.push(text::caption(format!("{} {}", &done_label(kind), item.title)));
+        let lbl = ui::caption(&format!("{} {}", &done_label(kind), item.title));
+        col.append(&lbl);
     } else {
-        col = col.push(text::body(item.title.clone()));
+        col.append(&ui::body(&item.title));
     }
 
     let date_str = item.created.format("%Y-%m-%d").to_string();
-    col = col.push(text::caption(date_str).size(11.0));
+    col.append(&ui::caption(&date_str));
 
     if !item.notes.is_empty() {
         let preview: String = item.notes.lines().take(2).collect::<Vec<_>>().join("\n");
-        col = col.push(text::caption(preview).size(11.0));
+        col.append(&ui::caption(&preview));
     }
 
-    col.into()
+    col
 }
 
 fn card_back(
@@ -42,27 +43,38 @@ fn card_back(
     kind: ListKind,
     confirming_delete: bool,
     note_inputs: &HashMap<Uuid, String>,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Box {
     let id = item.id;
-    let mut col = column().spacing(6);
+    let col = ui::vbox(6);
 
-    col = col.push(text::body(item.title.clone()));
+    col.append(&ui::body(&item.title));
 
     if !item.notes.is_empty() {
-        col = col.push(
-            container(text::caption(item.notes.clone()))
-                .padding([4, 8])
-                .width(Length::Fill),
-        );
+        let notes_lbl = ui::caption(&item.notes);
+        notes_lbl.set_margin_start(8);
+        notes_lbl.set_margin_end(8);
+        notes_lbl.set_margin_top(4);
+        notes_lbl.set_hexpand(true);
+        col.append(&notes_lbl);
     }
 
     // Note input
     let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
-    let note_input = text_input::text_input(crate::fl!("task-note-placeholder"), input_value)
-        .on_input(move |v| Message::NoteInputChanged(id, v))
-        .on_submit(move |_| Message::AppendNote(id))
-        .width(Length::Fill);
-    col = col.push(note_input);
+    let note_entry = ui::entry(&fl!("task-note-placeholder"), &input_value);
+    {
+        let s = sender.clone();
+        note_entry.connect_changed(move |e| {
+            s.emit(Message::NoteInputChanged(id, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        note_entry.connect_activate(move |_| {
+            s.emit(Message::AppendNote(id));
+        });
+    }
+    col.append(&note_entry);
 
     // Consumed/Bought toggle
     let toggle_label = if item.done {
@@ -70,46 +82,25 @@ fn card_back(
     } else {
         done_label(kind)
     };
-    if item.done {
-        col = col.push(
-            button::standard(toggle_label)
-                .on_press(Message::ToggleListItemDone(kind, id)),
-        );
-    } else {
-        col = col.push(
-            button::suggested(toggle_label)
-                .on_press(Message::ToggleListItemDone(kind, id)),
-        );
-    }
+    let css = if item.done { None } else { Some("suggested-action") };
+    let toggle_btn = ui::button_with_signal(&toggle_label, css, Message::ToggleListItemDone(kind, id), sender);
+    col.append(&toggle_btn);
 
     // Close
-    col = col.push(
-        button::standard(crate::fl!("btn-close"))
-            .on_press(Message::FlipListItem(id)),
-    );
+    let close_btn = ui::button_with_signal(&fl!("btn-close"), None, Message::FlipListItem(id), sender);
+    col.append(&close_btn);
 
     // Delete with confirmation
     if confirming_delete {
-        col = col.push(
-            row()
-                .spacing(8)
-                .push(
-                    button::destructive(crate::fl!("btn-delete"))
-                        .on_press(Message::DeleteListItem(kind, id)),
-                )
-                .push(
-                    button::standard(crate::fl!("btn-cancel"))
-                        .on_press(Message::CancelDeleteListItem),
-                ),
-        );
+        let row = ui::hbox(8);
+        row.append(&ui::button_with_signal(&fl!("btn-delete"), Some("destructive-action"), Message::DeleteListItem(kind, id), sender));
+        row.append(&ui::button_with_signal(&fl!("btn-cancel"), None, Message::CancelDeleteListItem, sender));
+        col.append(&row);
     } else {
-        col = col.push(
-            button::icon(icon::from_name("edit-delete-symbolic"))
-                .on_press(Message::ConfirmDeleteListItem(kind, id)),
-        );
+        col.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::ConfirmDeleteListItem(kind, id), sender));
     }
 
-    col.into()
+    col
 }
 
 fn list_card(
@@ -118,110 +109,300 @@ fn list_card(
     is_flipped: bool,
     confirming_delete: bool,
     note_inputs: &HashMap<Uuid, String>,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let id = item.id;
-    let inner: Element<'static, Message> = if is_flipped {
-        card_back(item, kind, confirming_delete, note_inputs)
+
+    let inner: gtk::Box = if is_flipped {
+        card_back(item, kind, confirming_delete, note_inputs, sender)
     } else {
         card_front(item, kind)
     };
 
-    let card_body = container(inner)
-        .padding(12)
-        .width(Length::Fixed(CARD_WIDTH))
-        .class(theme::Container::Card);
+    let frame = gtk::Frame::new(None);
+    inner.set_margin_start(12);
+    inner.set_margin_end(12);
+    inner.set_margin_top(12);
+    inner.set_margin_bottom(12);
+    inner.set_width_request(280);
+    frame.set_child(Some(&inner));
+    frame.add_css_class("card");
 
     if is_flipped {
-        card_body.into()
+        frame.upcast()
     } else {
-        button::custom(card_body)
-            .padding(0)
-            .class(theme::Button::Text)
-            .on_press(Message::FlipListItem(id))
-            .into()
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&frame));
+        btn.add_css_class("flat");
+        let s = sender.clone();
+        btn.connect_clicked(move |_| {
+            s.emit(Message::FlipListItem(id));
+        });
+        btn.upcast()
     }
+}
+
+fn card_flow(cards: Vec<gtk::Widget>) -> gtk::FlowBox {
+    let flow = gtk::FlowBox::new();
+    flow.set_selection_mode(gtk::SelectionMode::None);
+    flow.set_homogeneous(false);
+    flow.set_row_spacing(12);
+    flow.set_column_spacing(12);
+    flow.set_max_children_per_line(10);
+    flow.set_min_children_per_line(1);
+    for card in cards {
+        flow.insert(&card, -1);
+    }
+    flow
 }
 
 pub fn list_view(
     items: &[ListItem],
     input_value: &str,
     placeholder: String,
-    empty_msg: String,
+    empty_text: String,
     kind: ListKind,
     flipped: &HashSet<Uuid>,
     pending_delete: Option<(ListKind, Uuid)>,
     note_inputs: &HashMap<Uuid, String>,
-) -> Element<'static, Message> {
-    let mut content = column().spacing(12);
+    sender: &Sender,
+) -> gtk::Widget {
+    let content = ui::vbox(12);
 
-    // Creation input
-    let input = text_input::text_input(placeholder, input_value.to_string())
-        .on_input(move |v| Message::ListInputChanged(kind, v))
-        .on_submit(move |_| Message::ListSubmit(kind))
-        .width(Length::Fill);
-
-    content = content.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(input)
-            .push(
-                button::icon(icon::from_name("list-add-symbolic"))
-                    .on_press(Message::ListSubmit(kind)),
-            ),
-    );
+    // Creation input row
+    let input_row = ui::centered_hbox(8);
+    let entry = ui::entry(&placeholder, input_value);
+    {
+        let s = sender.clone();
+        entry.connect_changed(move |e| {
+            s.emit(Message::ListInputChanged(kind, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        entry.connect_activate(move |_| {
+            s.emit(Message::ListSubmit(kind));
+        });
+    }
+    input_row.append(&entry);
+    input_row.append(&ui::icon_button_with_signal("list-add-symbolic", Message::ListSubmit(kind), sender));
+    content.append(&input_row);
 
     if items.is_empty() {
-        content = content.push(
-            container(text::body(empty_msg))
-                .padding(32)
-                .center_x(Length::Fill)
-                .width(Length::Fill),
-        );
+        let empty_label = ui::body(&empty_text);
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        content.append(&empty_label);
     } else {
-        // Show active items first, then consumed/bought
+        // Show active items first, then done
         let mut active: Vec<&ListItem> = items.iter().filter(|i| !i.done).collect();
         let mut done: Vec<&ListItem> = items.iter().filter(|i| i.done).collect();
         active.sort_by(|a, b| b.created.cmp(&a.created));
         done.sort_by(|a, b| b.created.cmp(&a.created));
 
         if !active.is_empty() {
-            let cards: Vec<Element<'static, Message>> = active
+            let cards: Vec<gtk::Widget> = active
                 .iter()
                 .map(|item| {
                     let confirming = pending_delete
                         .is_some_and(|(k, id)| k == kind && id == item.id);
-                    list_card(item, kind, flipped.contains(&item.id), confirming, note_inputs)
+                    list_card(item, kind, flipped.contains(&item.id), confirming, note_inputs, sender)
                 })
                 .collect();
-
-            content = content.push(
-                flex_row(cards)
-                    .row_spacing(12)
-                    .column_spacing(12),
-            );
+            content.append(&card_flow(cards));
         }
 
         if !done.is_empty() {
-            let cards: Vec<Element<'static, Message>> = done
+            let cards: Vec<gtk::Widget> = done
                 .iter()
                 .map(|item| {
                     let confirming = pending_delete
                         .is_some_and(|(k, id)| k == kind && id == item.id);
-                    list_card(item, kind, flipped.contains(&item.id), confirming, note_inputs)
+                    list_card(item, kind, flipped.contains(&item.id), confirming, note_inputs, sender)
                 })
                 .collect();
-
-            content = content.push(
-                flex_row(cards)
-                    .row_spacing(12)
-                    .column_spacing(12),
-            );
+            content.append(&card_flow(cards));
         }
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
+}
+
+// --- Shopping view (uses Task instead of ListItem) ---
+
+fn shopping_card_front(task: &Task) -> gtk::Box {
+    let col = ui::vbox(4);
+
+    if task.state.is_done() {
+        col.append(&ui::caption(&format!("{} {}", fl!("list-bought"), task.title)));
+    } else {
+        col.append(&ui::body(&task.title));
+    }
+
+    let date_str = task.created.format("%Y-%m-%d").to_string();
+    col.append(&ui::caption(&date_str));
+
+    if !task.notes.is_empty() {
+        let preview: String = task.notes.lines().take(2).collect::<Vec<_>>().join("\n");
+        col.append(&ui::caption(&preview));
+    }
+
+    col
+}
+
+fn shopping_card_back(
+    task: &Task,
+    confirming_delete: bool,
+    note_inputs: &HashMap<Uuid, String>,
+    sender: &Sender,
+) -> gtk::Box {
+    let id = task.id;
+    let kind = ListKind::Shopping;
+    let col = ui::vbox(6);
+
+    col.append(&ui::body(&task.title));
+
+    if !task.notes.is_empty() {
+        let notes_lbl = ui::caption(&task.notes);
+        notes_lbl.set_margin_start(8);
+        notes_lbl.set_margin_end(8);
+        notes_lbl.set_margin_top(4);
+        notes_lbl.set_hexpand(true);
+        col.append(&notes_lbl);
+    }
+
+    // Note input
+    let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
+    let note_entry = ui::entry(&fl!("task-note-placeholder"), &input_value);
+    {
+        let s = sender.clone();
+        note_entry.connect_changed(move |e| {
+            s.emit(Message::NoteInputChanged(id, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        note_entry.connect_activate(move |_| {
+            s.emit(Message::AppendNote(id));
+        });
+    }
+    col.append(&note_entry);
+
+    // Bought toggle
+    let toggle_label = if task.state.is_done() {
+        format!("Undo {}", fl!("list-bought").to_lowercase())
+    } else {
+        fl!("list-bought")
+    };
+    let css = if task.state.is_done() { None } else { Some("suggested-action") };
+    let toggle_btn = ui::button_with_signal(&toggle_label, css, Message::ToggleListItemDone(kind, id), sender);
+    col.append(&toggle_btn);
+
+    // Close
+    col.append(&ui::button_with_signal(&fl!("btn-close"), None, Message::FlipListItem(id), sender));
+
+    // Delete with confirmation
+    if confirming_delete {
+        let row = ui::hbox(8);
+        row.append(&ui::button_with_signal(&fl!("btn-delete"), Some("destructive-action"), Message::DeleteListItem(kind, id), sender));
+        row.append(&ui::button_with_signal(&fl!("btn-cancel"), None, Message::CancelDeleteListItem, sender));
+        col.append(&row);
+    } else {
+        col.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::ConfirmDeleteListItem(kind, id), sender));
+    }
+
+    col
+}
+
+pub fn shopping_view(
+    tasks: &[Task],
+    input_value: &str,
+    flipped: &HashSet<Uuid>,
+    pending_delete: Option<(ListKind, Uuid)>,
+    note_inputs: &HashMap<Uuid, String>,
+    sender: &Sender,
+) -> gtk::Widget {
+    let kind = ListKind::Shopping;
+    let content = ui::vbox(12);
+
+    // Creation input row
+    let input_row = ui::centered_hbox(8);
+    let entry = ui::entry(&fl!("shopping-placeholder"), input_value);
+    {
+        let s = sender.clone();
+        entry.connect_changed(move |e| {
+            s.emit(Message::ListInputChanged(kind, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        entry.connect_activate(move |_| {
+            s.emit(Message::ListSubmit(kind));
+        });
+    }
+    input_row.append(&entry);
+    input_row.append(&ui::icon_button_with_signal("list-add-symbolic", Message::ListSubmit(kind), sender));
+    content.append(&input_row);
+
+    if tasks.is_empty() {
+        let empty_label = ui::body(&fl!("shopping-empty"));
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        content.append(&empty_label);
+    } else {
+        let mut active: Vec<&Task> = tasks.iter().filter(|t| !t.state.is_done()).collect();
+        let mut done: Vec<&Task> = tasks.iter().filter(|t| t.state.is_done()).collect();
+        active.sort_by(|a, b| b.created.cmp(&a.created));
+        done.sort_by(|a, b| b.created.cmp(&a.created));
+
+        for group in [active, done] {
+            if !group.is_empty() {
+                let cards: Vec<gtk::Widget> = group
+                    .iter()
+                    .map(|task| {
+                        let id = task.id;
+                        let is_flipped = flipped.contains(&id);
+                        let confirming = pending_delete
+                            .is_some_and(|(k, did)| k == kind && did == id);
+
+                        let inner: gtk::Box = if is_flipped {
+                            shopping_card_back(task, confirming, note_inputs, sender)
+                        } else {
+                            shopping_card_front(task)
+                        };
+
+                        let frame = gtk::Frame::new(None);
+                        inner.set_margin_start(12);
+                        inner.set_margin_end(12);
+                        inner.set_margin_top(12);
+                        inner.set_margin_bottom(12);
+                        inner.set_width_request(280);
+                        frame.set_child(Some(&inner));
+                        frame.add_css_class("card");
+
+                        if is_flipped {
+                            frame.upcast()
+                        } else {
+                            let btn = gtk::Button::new();
+                            btn.set_child(Some(&frame));
+                            btn.add_css_class("flat");
+                            let s = sender.clone();
+                            btn.connect_clicked(move |_| {
+                                s.emit(Message::FlipListItem(id));
+                            });
+                            btn.upcast()
+                        }
+                    })
+                    .collect();
+
+                content.append(&card_flow(cards));
+            }
+        }
+    }
+
+    ui::page_wrapper(&content).upcast()
 }

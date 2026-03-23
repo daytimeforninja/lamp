@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Timelike;
 
-use cosmic::app::{Core, Task as CosmicTask, context_drawer};
-use cosmic::iced::Length;
-use cosmic::widget::{button, column, container, flex_row, icon, nav_bar, row, scrollable, text, text_editor, text_input};
-use cosmic::{Application, Element, executor};
+use relm4::prelude::*;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
+use relm4::adw;
+use relm4::adw::prelude::*;
 
 use crate::config::LampConfig;
 use crate::core::account::Account;
@@ -26,6 +27,7 @@ use crate::sync::caldav::{CalDavClient, CalendarInfo};
 use crate::sync::carddav::Contact;
 use crate::sync::imap::ImapEmail;
 use crate::sync::{SyncConflict, SyncStatus};
+use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskLocation {
@@ -34,11 +36,6 @@ pub enum TaskLocation {
     Waiting,
     Someday,
     Project(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContextDrawerState {
-    NewTask,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +112,7 @@ impl EventForm {
     }
 }
 
-/// Buffered edit state for note fields — committed on Done, avoids re-renders while typing.
+/// Buffered edit state for note fields.
 pub struct NoteEditBuffer {
     pub id: uuid::Uuid,
     pub title: String,
@@ -123,11 +120,22 @@ pub struct NoteEditBuffer {
     pub source: String,
 }
 
+/// Async command results from background tasks.
+#[derive(Debug)]
+pub enum CommandMsg {
+    SyncCompleted(Result<crate::sync::SyncResult, String>),
+    SyncNotesCompleted(Result<crate::sync::webdav::NoteSyncResult, String>),
+    SyncAccountsCompleted(Result<crate::sync::webdav::FileSyncResult<Account>, String>),
+    ContactsFetched(Result<Vec<Contact>, String>),
+    ContactDeleted(Result<(), String>),
+    ImapFetched(Result<Vec<ImapEmail>, String>),
+    EmailArchived(Result<u32, String>),
+    ServiceConnectionTested(ServiceKind, Result<String, String>, Vec<CalendarInfo>),
+    EventDeleted,
+}
+
 pub struct Lamp {
-    core: Core,
-    nav_model: nav_bar::Model,
     config: LampConfig,
-    cosmic_config: cosmic::cosmic_config::Config,
     active_view: ActiveView,
     app_mode: AppMode,
 
@@ -139,32 +147,30 @@ pub struct Lamp {
     projects: Vec<Project>,
     habits: Vec<Habit>,
 
-    // Cached for today view (rebuilt on data changes)
     all_tasks_cache: Vec<Task>,
-    // Task location index for O(1) lookups
     task_index: HashMap<uuid::Uuid, TaskLocation>,
 
     // List items
     media_items: Vec<ListItem>,
-    shopping_items: Vec<ListItem>,
+    shopping_tasks: Vec<Task>,
 
     // Day plan
     day_plan: Option<DayPlan>,
     rejected_suggestions: HashSet<uuid::Uuid>,
 
     // All Tasks sort
-    all_tasks_sort: Option<(SortColumn, bool)>, // (column, ascending)
+    all_tasks_sort: Option<(SortColumn, bool)>,
 
-    // Archive browsing (lazy-loaded)
+    // Archive browsing
     archive_tasks: Vec<Task>,
     archive_search: String,
 
-    // Drawer & capture
-    context_drawer_state: Option<ContextDrawerState>,
+    // Capture
     new_task_form: NewTaskForm,
     launch_mode: LaunchMode,
+    show_capture_dialog: bool,
 
-    // Time tracking — active work timer in do mode
+    // Time tracking
     active_timer: Option<(uuid::Uuid, chrono::NaiveDateTime)>,
 
     // UI state
@@ -182,7 +188,7 @@ pub struct Lamp {
     pending_delete_list_item: Option<(ListKind, uuid::Uuid)>,
     waiting_for_inputs: HashMap<uuid::Uuid, String>,
 
-    // Review checklist (ephemeral — resets on nav away)
+    // Review checklist
     review_checked: HashSet<usize>,
 
     // Events
@@ -208,89 +214,75 @@ pub struct Lamp {
     flipped_notes: HashSet<uuid::Uuid>,
     editing_note: Option<uuid::Uuid>,
     pending_delete_note: Option<uuid::Uuid>,
-    note_editor_content: Option<(uuid::Uuid, text_editor::Content)>,
+    note_body_buffer: Option<(uuid::Uuid, String)>,
     note_link_search: String,
-    /// Buffered edit fields — only committed to the note on Done.
     note_edit_buffer: Option<NoteEditBuffer>,
     backlink_index: HashMap<LinkTarget, Vec<uuid::Uuid>>,
 
     // Sync
     sync_status: SyncStatus,
     sync_anim_frame: usize,
-    /// Discovered calendars from CalDAV test connection
     discovered_calendars: Vec<CalendarInfo>,
-    /// Password inputs for [Calendars, Contacts, Notes, Imap]
     service_passwords: [String; 4],
-    /// Test connection results for [Calendars, Contacts, Notes, Imap]
     service_test_status: [Option<Result<String, String>>; 4],
 
-    // IMAP emails
+    // IMAP
     imap_emails: Vec<ImapEmail>,
-
-    /// UIDs of emails archived this session — filtered out on re-fetch
     archived_email_uids: HashSet<u32>,
 
-    // Pending sync completions: (sync_href, vcalendar_body) to push on next sync
+    // Pending sync ops
     pending_completions: Vec<(String, String)>,
-
-    // Sync conflicts awaiting user resolution
     sync_conflicts: Vec<SyncConflict>,
-
-    // Pending remote deletions: hrefs to delete on next sync
     pending_deletions: Vec<String>,
 
     // Month calendar
     month_calendar: MonthCalendarState,
 
-    // Track in-flight sync operations to know when to clear Syncing status
     sync_ops_pending: usize,
+
+    // Whether the page content needs rebuilding after update
+    needs_rebuild: bool,
 }
 
-pub struct Flags {
-    pub config: LampConfig,
-    pub cosmic_config: cosmic::cosmic_config::Config,
-    pub launch_mode: LaunchMode,
+pub struct LampWidgets {
+    page_content: gtk::Box,
+    search_entry: gtk::SearchEntry,
+    split_view: adw::NavigationSplitView,
+    toast_overlay: adw::ToastOverlay,
+    sync_button: gtk::Button,
+    timer_source: Option<gtk::glib::SourceId>,
+    sync_anim_source: Option<gtk::glib::SourceId>,
+    last_sync_toast: Option<String>,
 }
 
-impl Application for Lamp {
-    type Executor = executor::Default;
-    type Flags = Flags;
-    type Message = Message;
+impl Component for Lamp {
+    type Init = (LampConfig, LaunchMode);
+    type Input = Message;
+    type Output = ();
+    type CommandOutput = CommandMsg;
+    type Root = adw::ApplicationWindow;
+    type Widgets = LampWidgets;
 
-    const APP_ID: &'static str = "dev.lamp.app";
-
-    fn core(&self) -> &Core {
-        &self.core
+    fn init_root() -> Self::Root {
+        let window = adw::ApplicationWindow::new(&relm4::main_adw_application());
+        window.set_default_size(1200, 800);
+        window.set_title(Some("Lamp"));
+        window
     }
 
-    fn core_mut(&mut self) -> &mut Core {
-        &mut self.core
-    }
-
-    fn init(mut core: Core, flags: Self::Flags) -> (Self, CosmicTask<Self::Message>) {
-        let config = flags.config;
-        let cosmic_config = flags.cosmic_config;
-        let launch_mode = flags.launch_mode;
+    fn init(
+        init: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let (config, launch_mode) = init;
 
         // Ensure org files exist
         if let Err(e) = config.ensure_files() {
             log::error!("Failed to create org directory: {}", e);
         }
 
-        // Build sidebar navigation model with section dividers
-        let mut nav_model = nav_bar::Model::default();
-        for page in WhatPage::ALL {
-            let mut item = nav_model.insert();
-            item = item
-                .text(page.title())
-                .icon(icon::from_name(page.icon_name()).icon())
-                .data(*page);
-            if WhatPage::SECTION_STARTS.contains(page) {
-                item.divider_above(true);
-            }
-        }
-
-        // Load tasks from org files
+        // Load data
         let inbox_tasks = load_tasks(&config.inbox_path());
         let next_tasks = load_tasks(&config.next_path());
         let waiting_tasks = load_tasks(&config.waiting_path());
@@ -298,34 +290,26 @@ impl Application for Lamp {
         let projects = load_projects(&config.projects_path());
         let habits = load_habits(&config.habits_path());
         let media_items = load_list_items(&config.media_path());
-        let shopping_items = load_list_items(&config.shopping_path());
+        let shopping_tasks = load_shopping_tasks(&config.shopping_path());
 
-        // Load day plan, clear if stale
         let today = chrono::Local::now().date_naive();
         let day_plan = load_day_plan(&config.dayplan_path())
             .filter(|dp| !dp.is_stale(today));
 
-        // Load cached contacts, events, and accounts
         let contacts = crate::sync::carddav::load_contacts(&config.contacts_path());
         let events = event::load_events(&config.events_cache_path());
         let accounts = load_accounts(&config.accounts_path());
         let notes = load_notes_dir(&config.notes_dir(), &config.notes_path());
 
-        // Set initial state based on launch mode
-        let (app_mode, context_drawer_state) = match launch_mode {
-            LaunchMode::Capture => {
-                core.window.show_context = true;
-                (AppMode::Plan, Some(ContextDrawerState::NewTask))
-            }
-            LaunchMode::Today => (AppMode::Do, None),
-            LaunchMode::Normal => (AppMode::Plan, None),
+        let (loaded_pending_completions, loaded_pending_deletions) = Self::load_pending_ops(&config);
+
+        let app_mode = match launch_mode {
+            LaunchMode::Today => AppMode::Do,
+            _ => AppMode::Plan,
         };
 
-        let mut app = Self {
-            core,
-            nav_model,
+        let mut model = Self {
             config,
-            cosmic_config,
             active_view: ActiveView::What(WhatPage::DailyPlanning),
             app_mode,
             inbox_tasks,
@@ -335,7 +319,7 @@ impl Application for Lamp {
             projects,
             habits,
             media_items,
-            shopping_items,
+            shopping_tasks,
             day_plan,
             rejected_suggestions: HashSet::new(),
             all_tasks_cache: Vec::new(),
@@ -343,9 +327,9 @@ impl Application for Lamp {
             all_tasks_sort: None,
             archive_tasks: Vec::new(),
             archive_search: String::new(),
-            context_drawer_state,
             new_task_form: NewTaskForm::default(),
             launch_mode,
+            show_capture_dialog: launch_mode == LaunchMode::Capture,
             active_timer: None,
             inbox_input: String::new(),
             project_input: String::new(),
@@ -375,7 +359,7 @@ impl Application for Lamp {
             flipped_notes: HashSet::new(),
             editing_note: None,
             pending_delete_note: None,
-            note_editor_content: None,
+            note_body_buffer: None,
             note_link_search: String::new(),
             note_edit_buffer: None,
             events,
@@ -388,94 +372,243 @@ impl Application for Lamp {
             service_test_status: [None, None, None, None],
             imap_emails: Vec::new(),
             archived_email_uids: HashSet::new(),
-            pending_completions: Vec::new(),
+            pending_completions: loaded_pending_completions,
             sync_conflicts: Vec::new(),
-            pending_deletions: Vec::new(),
+            pending_deletions: loaded_pending_deletions,
             month_calendar: MonthCalendarState::default(),
             sync_ops_pending: 0,
+            needs_rebuild: true,
         };
-        // Purge habit tasks from task lists — habits are the authoritative
-        // store, so duplicates in inbox/next/etc are stale.
-        let habit_ids: std::collections::HashSet<uuid::Uuid> =
-            app.habits.iter().map(|h| h.task.id).collect();
-        if !habit_ids.is_empty() {
-            app.inbox_tasks.retain(|t| !habit_ids.contains(&t.id));
-            app.next_tasks.retain(|t| !habit_ids.contains(&t.id));
-            app.waiting_tasks.retain(|t| !habit_ids.contains(&t.id));
-            app.someday_tasks.retain(|t| !habit_ids.contains(&t.id));
-            for project in &mut app.projects {
-                project.tasks.retain(|t| !habit_ids.contains(&t.id));
+
+        // Purge habit/shopping tasks from task lists
+        let habit_ids: HashSet<uuid::Uuid> = model.habits.iter().map(|h| h.task.id).collect();
+        let shopping_ids: HashSet<uuid::Uuid> = model.shopping_tasks.iter().map(|t| t.id).collect();
+        let exclude_ids: HashSet<uuid::Uuid> = habit_ids.union(&shopping_ids).copied().collect();
+        if !exclude_ids.is_empty() {
+            model.inbox_tasks.retain(|t| !exclude_ids.contains(&t.id));
+            model.next_tasks.retain(|t| !exclude_ids.contains(&t.id));
+            model.waiting_tasks.retain(|t| !exclude_ids.contains(&t.id));
+            model.someday_tasks.retain(|t| !exclude_ids.contains(&t.id));
+            for project in &mut model.projects {
+                project.tasks.retain(|t| !exclude_ids.contains(&t.id));
             }
         }
+        model.rebuild_cache();
 
-        app.rebuild_cache();
+        // --- Build UI ---
 
-        (app, CosmicTask::none())
-    }
+        // Sidebar
+        let sidebar = gtk::ListBox::new();
+        sidebar.set_selection_mode(gtk::SelectionMode::Single);
+        sidebar.add_css_class("navigation-sidebar");
 
-    fn nav_model(&self) -> Option<&nav_bar::Model> {
-        if self.launch_mode == LaunchMode::Today {
-            return None;
+        for (i, page) in WhatPage::ALL.iter().enumerate() {
+            if WhatPage::SECTION_STARTS.contains(page) && i > 0 {
+                let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+                sep.set_margin_top(6);
+                sep.set_margin_bottom(6);
+                sidebar.append(&sep);
+            }
+            let row = gtk::ListBoxRow::new();
+            let hbox = ui::hbox(8);
+            hbox.set_margin_start(8);
+            hbox.set_margin_end(8);
+            hbox.set_margin_top(4);
+            hbox.set_margin_bottom(4);
+            let icon = gtk::Image::from_icon_name(page.icon_name());
+            let label = gtk::Label::new(Some(&page.title()));
+            label.set_hexpand(true);
+            label.set_xalign(0.0);
+            hbox.append(&icon);
+            hbox.append(&label);
+            row.set_child(Some(&hbox));
+            sidebar.append(&row);
         }
-        match self.app_mode {
-            AppMode::Plan => Some(&self.nav_model),
-            AppMode::Do => None,
-        }
-    }
 
-    fn on_nav_select(&mut self, id: nav_bar::Id) -> CosmicTask<Message> {
-        if let Some(page) = self.nav_model.data::<WhatPage>(id).cloned() {
-            // Reset review checklist when navigating away from Review
-            if let ActiveView::What(WhatPage::Review) = self.active_view {
-                if page != WhatPage::Review {
-                    self.review_checked.clear();
+        {
+            let s = sender.input_sender().clone();
+            sidebar.connect_row_selected(move |_, row| {
+                if let Some(row) = row {
+                    let idx = row.index() as usize;
+                    // Account for separator rows
+                    let pages = WhatPage::ALL;
+                    if idx < pages.len() {
+                        s.emit(Message::NavigateTo(pages[idx]));
+                    }
                 }
-            }
-            self.active_view = ActiveView::What(page);
-            self.search_query.clear();
-            self.nav_model.activate(id);
-
-            // Lazy-load archive (reload each visit to pick up new completions)
-            if page == WhatPage::Archive {
-                self.archive_tasks = load_tasks(&self.config.archive_path());
-                self.archive_search.clear();
-            }
+            });
         }
-        CosmicTask::none()
+
+        let sidebar_scroll = ui::scrolled(&sidebar);
+        let sidebar_page = adw::NavigationPage::new(&sidebar_scroll, "Navigation");
+
+        // --- Header bar (CSD) ---
+        let header_bar = adw::HeaderBar::new();
+
+        // Mode toggle — icon-only with tooltips per HIG
+        let mode_plan_btn = gtk::ToggleButton::new();
+        mode_plan_btn.set_icon_name("view-list-symbolic");
+        mode_plan_btn.set_tooltip_text(Some("Plan"));
+        let mode_do_btn = gtk::ToggleButton::new();
+        mode_do_btn.set_icon_name("media-playback-start-symbolic");
+        mode_do_btn.set_tooltip_text(Some("Do"));
+        mode_do_btn.set_group(Some(&mode_plan_btn));
+        if model.app_mode == AppMode::Plan {
+            mode_plan_btn.set_active(true);
+        } else {
+            mode_do_btn.set_active(true);
+        }
+        {
+            let s = sender.input_sender().clone();
+            mode_plan_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    s.emit(Message::SetMode(AppMode::Plan));
+                }
+            });
+        }
+        {
+            let s = sender.input_sender().clone();
+            mode_do_btn.connect_toggled(move |btn| {
+                if btn.is_active() {
+                    s.emit(Message::SetMode(AppMode::Do));
+                }
+            });
+        }
+        // Place Plan/Do in center as title widget (view switcher pattern)
+        let mode_box = ui::hbox(0);
+        mode_box.add_css_class("linked");
+        mode_box.append(&mode_plan_btn);
+        mode_box.append(&mode_do_btn);
+        header_bar.set_title_widget(Some(&mode_box));
+
+        // Header end buttons — icon-only with tooltips per HIG
+        let new_task_btn = ui::icon_button("list-add-symbolic");
+        new_task_btn.set_tooltip_text(Some("New Task (Ctrl+N)"));
+        {
+            let s = sender.input_sender().clone();
+            new_task_btn.connect_clicked(move |_| {
+                s.emit(Message::OpenNewTaskForm);
+            });
+        }
+        header_bar.pack_end(&new_task_btn);
+
+        let sync_button = ui::icon_button("emblem-synchronizing-symbolic");
+        sync_button.set_tooltip_text(Some("Sync"));
+        {
+            let s = sender.input_sender().clone();
+            sync_button.connect_clicked(move |_| {
+                s.emit(Message::SyncNow);
+            });
+        }
+        header_bar.pack_end(&sync_button);
+
+        let settings_btn = ui::icon_button("emblem-system-symbolic");
+        settings_btn.set_tooltip_text(Some("Settings"));
+        {
+            let s = sender.input_sender().clone();
+            settings_btn.connect_clicked(move |_| {
+                s.emit(Message::OpenSettings);
+            });
+        }
+        header_bar.pack_end(&settings_btn);
+
+        // --- Content pane (inside split view) ---
+        let content_inner = ui::vbox(0);
+
+        // Search entry
+        let search_entry = gtk::SearchEntry::new();
+        search_entry.set_placeholder_text(Some(&crate::fl!("search-placeholder")));
+        search_entry.set_margin_start(16);
+        search_entry.set_margin_end(16);
+        search_entry.set_margin_top(4);
+        {
+            let s = sender.input_sender().clone();
+            search_entry.connect_search_changed(move |e| {
+                s.emit(Message::SearchQueryChanged(e.text().to_string()));
+            });
+        }
+        content_inner.append(&search_entry);
+
+        // Page content area — wrapped in AdwClamp for comfortable reading width
+        let page_content = ui::vbox(0);
+        page_content.set_vexpand(true);
+        page_content.set_hexpand(true);
+        let clamp = adw::Clamp::new();
+        clamp.set_maximum_size(900);
+        clamp.set_child(Some(&page_content));
+        let page_scroll = ui::scrolled(&clamp);
+        content_inner.append(&page_scroll);
+
+        // Split view
+        let split_view = adw::NavigationSplitView::new();
+        split_view.set_sidebar(Some(&sidebar_page));
+        let content_page = adw::NavigationPage::new(&content_inner, "Content");
+        split_view.set_content(Some(&content_page));
+
+        if model.app_mode == AppMode::Do || model.launch_mode == LaunchMode::Today {
+            split_view.set_show_content(true);
+            split_view.set_collapsed(true);
+        }
+
+        // Toast overlay wraps the split view for transient notifications
+        let toast_overlay = adw::ToastOverlay::new();
+        toast_overlay.set_child(Some(&split_view));
+
+        // ToolbarView wraps everything — header bar on top, toast overlay as content
+        let toolbar_view = adw::ToolbarView::new();
+        toolbar_view.add_top_bar(&header_bar);
+        toolbar_view.set_content(Some(&toast_overlay));
+
+        root.set_content(Some(&toolbar_view));
+
+        // Keyboard shortcut: Ctrl+N for new task
+        let controller = gtk::EventControllerKey::new();
+        {
+            let s = sender.input_sender().clone();
+            controller.connect_key_pressed(move |_, key, _, modifiers| {
+                if key == gtk::gdk::Key::n && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                    s.emit(Message::OpenNewTaskForm);
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk::glib::Propagation::Proceed
+            });
+        }
+        root.add_controller(controller);
+
+        let widgets = LampWidgets {
+            page_content,
+            search_entry,
+            split_view,
+            toast_overlay,
+            sync_button,
+            timer_source: None,
+            sync_anim_source: None,
+            last_sync_toast: None,
+        };
+
+        ComponentParts { model, widgets }
     }
 
-    fn header_center(&self) -> Vec<Element<'_, Message>> {
-        if self.launch_mode == LaunchMode::Today {
-            return vec![text::title4("Today").into()];
-        }
+    fn update(&mut self, message: Message, sender: ComponentSender<Self>, _root: &Self::Root) {
+        self.needs_rebuild = false;
 
-        let plan_btn = if self.app_mode == AppMode::Plan {
-            button::suggested("Plan")
-        } else {
-            button::standard("Plan")
-        }
-        .on_press(Message::SetMode(AppMode::Plan));
-
-        let do_btn = if self.app_mode == AppMode::Do {
-            button::suggested("Do")
-        } else {
-            button::standard("Do")
-        }
-        .on_press(Message::SetMode(AppMode::Do));
-
-        vec![
-            row()
-                .spacing(4)
-                .push(plan_btn)
-                .push(do_btn)
-                .into(),
-        ]
-    }
-
-    fn update(&mut self, message: Message) -> CosmicTask<Message> {
         match message {
+            Message::NavigateTo(page) => {
+                if let ActiveView::What(WhatPage::Review) = self.active_view {
+                    if page != WhatPage::Review {
+                        self.review_checked.clear();
+                    }
+                }
+                self.active_view = ActiveView::What(page);
+                self.search_query.clear();
+                if page == WhatPage::Archive {
+                    self.archive_tasks = load_tasks(&self.config.archive_path());
+                    self.archive_search.clear();
+                }
+                self.needs_rebuild = true;
+            }
+
             Message::SetMode(mode) => {
-                // Save running timer before switching modes
                 if let Some((active_id, start)) = self.active_timer.take() {
                     let now = chrono::Local::now().naive_local();
                     self.modify_task(active_id, |task| {
@@ -484,19 +617,20 @@ impl Application for Lamp {
                     self.save_all();
                 }
                 self.app_mode = mode;
+                self.needs_rebuild = true;
             }
 
             Message::SearchQueryChanged(q) => {
                 self.search_query = q;
+                self.needs_rebuild = true;
             }
 
             Message::ArchiveSearchChanged(q) => {
                 self.archive_search = q;
+                self.needs_rebuild = true;
             }
 
-            Message::SelectWhen(_) => {
-                // When pages removed — no-op for compatibility
-            }
+            Message::SelectWhen(_) => {}
 
             Message::InboxInputChanged(value) => {
                 self.inbox_input = value;
@@ -509,6 +643,7 @@ impl Application for Lamp {
                     self.inbox_tasks.push(task);
                     self.inbox_input.clear();
                     self.save_inbox();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -516,6 +651,7 @@ impl Application for Lamp {
                 let task = Task::new(sentence_case(&title));
                 self.inbox_tasks.push(task);
                 self.save_inbox();
+                self.needs_rebuild = true;
             }
 
             Message::UpdateTaskTitle(id, ref title) => {
@@ -527,20 +663,24 @@ impl Application for Lamp {
 
             Message::ToggleTaskDone(id) => {
                 self.toggle_done(id);
+                self.needs_rebuild = true;
             }
 
             Message::SetTaskState(id, state) => {
                 self.set_task_state(id, state);
+                self.needs_rebuild = true;
             }
 
             Message::SetTaskPriority(id, priority) => {
                 self.set_task_priority(id, priority);
+                self.needs_rebuild = true;
             }
 
             Message::SetTaskEsc(id, esc) => {
                 self.modify_task(id, |task| {
                     task.esc = esc;
                 });
+                self.needs_rebuild = true;
             }
 
             Message::WaitingForInputChanged(id, value) => {
@@ -551,10 +691,10 @@ impl Application for Lamp {
                 self.modify_task(id, |task| {
                     task.follow_up = date;
                 });
+                self.needs_rebuild = true;
             }
 
             Message::SetWaitingFor(id, ref value) => {
-                // Use the stored input value if the message value is empty (from on_submit)
                 let effective = if value.is_empty() {
                     self.waiting_for_inputs.get(&id).cloned().unwrap_or_default()
                 } else {
@@ -565,25 +705,29 @@ impl Application for Lamp {
                     task.waiting_for = wf;
                 });
                 self.waiting_for_inputs.remove(&id);
+                self.needs_rebuild = true;
             }
 
             Message::DeleteTask(id) => {
-                // Queue server-side deletion if task has a sync_href
+                let mut any_pending = false;
                 if let Some(task) = self.remove_task(id) {
                     if let Some(href) = task.sync_href {
                         self.pending_deletions.push(href);
+                        any_pending = true;
                     }
                 }
-                // Also remove from projects
                 for project in &mut self.projects {
                     if let Some(pos) = project.tasks.iter().position(|t| t.id == id) {
                         if let Some(href) = project.tasks[pos].sync_href.clone() {
                             self.pending_deletions.push(href);
+                            any_pending = true;
                         }
                         project.tasks.remove(pos);
                     }
                 }
+                if any_pending { self.save_pending_ops(); }
                 self.save_all();
+                self.needs_rebuild = true;
             }
 
             Message::MoveToProject(id, ref project_name) => {
@@ -592,11 +736,11 @@ impl Application for Lamp {
                     if let Some(project) = self.projects.iter_mut().find(|p| p.name == *project_name) {
                         project.tasks.push(task);
                     } else {
-                        // Project not found — route back by state to avoid data loss
                         log::warn!("Project '{}' not found, routing task by state", project_name);
                         self.route_task_by_state(task);
                     }
                     self.save_all();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -606,35 +750,34 @@ impl Application for Lamp {
                         task.contexts.push(ctx.clone());
                     }
                 });
+                self.needs_rebuild = true;
             }
 
             Message::RemoveContext(id, ref ctx) => {
                 self.modify_task(id, |task| {
                     task.contexts.retain(|c| c != ctx);
                 });
+                self.needs_rebuild = true;
             }
 
             Message::SetScheduled(id, date) => {
                 self.modify_task(id, |task| {
                     task.scheduled = date;
                 });
+                self.needs_rebuild = true;
             }
 
             Message::SetDeadline(id, date) => {
                 self.modify_task(id, |task| {
                     task.deadline = date;
                 });
+                self.needs_rebuild = true;
             }
 
             Message::OpenSettings => {
                 self.active_view = ActiveView::What(WhatPage::Settings);
-                // Activate the corresponding sidebar nav item
-                let target = self.nav_model.iter()
-                    .find(|&id| self.nav_model.data::<WhatPage>(id) == Some(&WhatPage::Settings));
-                if let Some(id) = target {
-                    self.nav_model.activate(id);
-                }
                 self.search_query.clear();
+                self.needs_rebuild = true;
             }
 
             Message::SettingsContextInput(value) => {
@@ -650,6 +793,7 @@ impl Application for Lamp {
                     }
                     self.settings_context_input.clear();
                     self.save_config();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -657,6 +801,7 @@ impl Application for Lamp {
                 if idx < self.config.contexts.len() {
                     self.config.contexts.remove(idx);
                     self.save_config();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -669,6 +814,7 @@ impl Application for Lamp {
                 self.config.debug_logging = !self.config.debug_logging;
                 lamp::set_debug_logging(self.config.debug_logging);
                 self.save_config();
+                self.needs_rebuild = true;
             }
 
             Message::ProjectInputChanged(value) => {
@@ -678,21 +824,22 @@ impl Application for Lamp {
             Message::ProjectSubmit => {
                 let name = self.project_input.trim().to_string();
                 if !name.is_empty() && !self.projects.iter().any(|p| p.name == name) {
-                    self.projects.push(crate::core::project::Project::new(name));
+                    self.projects.push(Project::new(name));
                     self.project_input.clear();
                     self.save_projects();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::CreateProject(name) => {
                 if !name.is_empty() && !self.projects.iter().any(|p| p.name == name) {
-                    self.projects.push(crate::core::project::Project::new(name));
+                    self.projects.push(Project::new(name));
                     self.save_projects();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::DeleteProject(name) => {
-                // Move orphaned tasks back to their state-based lists before deleting
                 if let Some(pos) = self.projects.iter().position(|p| p.name == name) {
                     let project = self.projects.remove(pos);
                     for mut task in project.tasks {
@@ -702,19 +849,15 @@ impl Application for Lamp {
                 }
                 self.save_all();
                 self.rebuild_cache();
+                self.needs_rebuild = true;
             }
 
             Message::ProjectTaskInputChanged(ref project_name, ref value) => {
-                self.project_task_inputs
-                    .insert(project_name.clone(), value.clone());
+                self.project_task_inputs.insert(project_name.clone(), value.clone());
             }
 
             Message::AddTaskToProject(ref project_name) => {
-                let input = self
-                    .project_task_inputs
-                    .get(project_name)
-                    .cloned()
-                    .unwrap_or_default();
+                let input = self.project_task_inputs.get(project_name).cloned().unwrap_or_default();
                 let title = sentence_case(&input);
                 if !title.is_empty() {
                     let mut task = Task::new(title);
@@ -724,6 +867,7 @@ impl Application for Lamp {
                     }
                     self.project_task_inputs.insert(project_name.clone(), String::new());
                     self.save_all();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -756,6 +900,7 @@ impl Application for Lamp {
                             project.tasks.swap(pos, new_pos as usize);
                             self.save_projects();
                             self.rebuild_cache();
+                            self.needs_rebuild = true;
                         }
                     }
                 }
@@ -767,24 +912,25 @@ impl Application for Lamp {
                 } else {
                     self.review_checked.insert(idx);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::CompleteHabit(id) => {
                 let today = chrono::Local::now().date_naive();
                 if let Some(habit) = self.habits.iter_mut().find(|h| h.task.id == id) {
                     if habit.is_due(today) {
-                        habit
-                            .completions
-                            .push(chrono::Local::now().naive_local());
+                        habit.completions.push(chrono::Local::now().naive_local());
                         habit.recalculate_streak(today);
                     }
                 }
                 self.save_habits();
+                self.needs_rebuild = true;
             }
 
             Message::DeleteHabit(id) => {
                 self.habits.retain(|h| h.task.id != id);
                 self.save_habits();
+                self.needs_rebuild = true;
             }
 
             Message::HabitInputChanged(value) => {
@@ -795,7 +941,6 @@ impl Application for Lamp {
                 let title = self.habit_input.trim().to_string();
                 if !title.is_empty() {
                     use crate::core::recurrence::{Recurrence, RecurrenceInterval, RecurrenceUnit};
-
                     let today = chrono::Local::now().date_naive();
                     let mut task = Task::new(title);
                     task.scheduled = Some(today);
@@ -804,16 +949,16 @@ impl Application for Lamp {
                         unit: RecurrenceUnit::Day,
                     }));
                     task.contexts.push("habit".to_string());
-                    let habit = crate::core::habit::Habit::new(task);
+                    let habit = Habit::new(task);
                     self.habits.push(habit);
                     self.habit_input.clear();
                     self.save_habits();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::ToggleTaskExpand(id) => {
                 if self.expanded_task == Some(id) {
-                    // Collapsing — apply sentence case to title
                     self.modify_task(id, |task| {
                         task.title = sentence_case(&task.title);
                     });
@@ -821,6 +966,7 @@ impl Application for Lamp {
                 } else {
                     self.expanded_task = Some(id);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::NoteInputChanged(id, value) => {
@@ -835,36 +981,24 @@ impl Application for Lamp {
                     let stamp = now.format("[%Y-%m-%d %a %H:%M]").to_string();
                     let line = format!("{} {}", stamp, text);
 
-                    // Try list items first, then fall through to tasks
                     if let Some(item) = self.media_items.iter_mut().find(|i| i.id == id) {
-                        if item.notes.is_empty() {
-                            item.notes = line;
-                        } else {
-                            item.notes.push('\n');
-                            item.notes.push_str(&line);
-                        }
+                        if item.notes.is_empty() { item.notes = line; }
+                        else { item.notes.push('\n'); item.notes.push_str(&line); }
                         self.note_inputs.insert(id, String::new());
                         self.save_media();
-                    } else if let Some(item) = self.shopping_items.iter_mut().find(|i| i.id == id) {
-                        if item.notes.is_empty() {
-                            item.notes = line;
-                        } else {
-                            item.notes.push('\n');
-                            item.notes.push_str(&line);
-                        }
+                    } else if let Some(task) = self.shopping_tasks.iter_mut().find(|t| t.id == id) {
+                        if task.notes.is_empty() { task.notes = line; }
+                        else { task.notes.push('\n'); task.notes.push_str(&line); }
                         self.note_inputs.insert(id, String::new());
                         self.save_shopping();
                     } else {
                         self.modify_task(id, |task| {
-                            if task.notes.is_empty() {
-                                task.notes = line;
-                            } else {
-                                task.notes.push('\n');
-                                task.notes.push_str(&line);
-                            }
+                            if task.notes.is_empty() { task.notes = line; }
+                            else { task.notes.push('\n'); task.notes.push_str(&line); }
                         });
                         self.note_inputs.insert(id, String::new());
                     }
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -888,37 +1022,37 @@ impl Application for Lamp {
                     ListKind::Shopping => {
                         let title = self.shopping_input.trim().to_string();
                         if !title.is_empty() {
-                            self.shopping_items.push(ListItem::new(title));
+                            let mut task = Task::new(title);
+                            task.extra_tags = vec!["shopping".to_string()];
+                            self.shopping_tasks.push(task);
                             self.shopping_input.clear();
                             self.save_shopping();
                         }
                     }
                 }
+                self.needs_rebuild = true;
             }
 
             Message::DeleteListItem(kind, id) => {
                 match kind {
                     ListKind::Media => {
                         if let Some(item) = self.media_items.iter().find(|i| i.id == id) {
-                            if let Err(e) = OrgWriter::append_list_item_to_file(&self.config.consumed_path(), item) {
-                                log::error!("Failed to archive media item: {}", e);
-                            }
+                            let _ = OrgWriter::append_list_item_to_file(&self.config.consumed_path(), item);
                         }
                         self.media_items.retain(|i| i.id != id);
                         self.save_media();
                     }
                     ListKind::Shopping => {
-                        if let Some(item) = self.shopping_items.iter().find(|i| i.id == id) {
-                            if let Err(e) = OrgWriter::append_list_item_to_file(&self.config.bought_path(), item) {
-                                log::error!("Failed to archive shopping item: {}", e);
-                            }
+                        if let Some(task) = self.shopping_tasks.iter().find(|t| t.id == id) {
+                            let _ = OrgWriter::append_to_file(&self.config.bought_path(), task);
                         }
-                        self.shopping_items.retain(|i| i.id != id);
+                        self.shopping_tasks.retain(|t| t.id != id);
                         self.save_shopping();
                     }
                 }
                 self.flipped_list_items.remove(&id);
                 self.pending_delete_list_item = None;
+                self.needs_rebuild = true;
             }
 
             Message::ToggleListItemDone(kind, id) => {
@@ -930,26 +1064,35 @@ impl Application for Lamp {
                         self.save_media();
                     }
                     ListKind::Shopping => {
-                        if let Some(item) = self.shopping_items.iter_mut().find(|i| i.id == id) {
-                            item.done = !item.done;
+                        if let Some(task) = self.shopping_tasks.iter_mut().find(|t| t.id == id) {
+                            if task.state.is_done() {
+                                task.state = TaskState::Todo;
+                                task.completed = None;
+                            } else {
+                                task.complete();
+                            }
                         }
                         self.save_shopping();
                     }
                 }
+                self.needs_rebuild = true;
             }
 
             Message::FlipListItem(id) => {
                 if !self.flipped_list_items.remove(&id) {
                     self.flipped_list_items.insert(id);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::ConfirmDeleteListItem(kind, id) => {
                 self.pending_delete_list_item = Some((kind, id));
+                self.needs_rebuild = true;
             }
 
             Message::CancelDeleteListItem => {
                 self.pending_delete_list_item = None;
+                self.needs_rebuild = true;
             }
 
             // Contacts CRUD
@@ -964,22 +1107,24 @@ impl Application for Lamp {
                     self.contact_input.clear();
                     self.contacts.sort_by(|a, b| a.name.cmp(&b.name));
                     self.save_contacts();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::ConfirmDeleteContact(idx) => {
                 self.pending_delete_contact = Some(idx);
+                self.needs_rebuild = true;
             }
 
             Message::CancelDeleteContact => {
                 self.pending_delete_contact = None;
+                self.needs_rebuild = true;
             }
 
             Message::DeleteContact(idx) => {
                 self.pending_delete_contact = None;
                 if idx < self.contacts.len() {
                     let removed = self.contacts.remove(idx);
-                    // Rebuild index-based state after removal to avoid stale references
                     self.flipped_contacts = self.flipped_contacts.iter()
                         .filter(|&&i| i != idx)
                         .map(|&i| if i > idx { i - 1 } else { i })
@@ -991,25 +1136,24 @@ impl Application for Lamp {
                     };
                     self.save_contacts();
 
-                    // Delete from CardDAV server if we have a sync_href
                     if let Some(href) = removed.sync_href {
                         let contacts_url = self.config.contacts.url.trim().to_string();
                         if !contacts_url.is_empty() {
-                            return CosmicTask::perform(
-                                async move {
-                                    let (username, pw) = match crate::sync::keyring::load_credentials(&contacts_url).await {
-                                        Ok(Some(creds)) => creds,
-                                        _ => return Err("No CardDAV credentials".to_string()),
-                                    };
-                                    let client = crate::sync::carddav::CardDavClient::new(
-                                        &contacts_url, &username, &pw,
-                                    )?;
-                                    client.delete_contact(&href).await
-                                },
-                                |result| cosmic::Action::App(Message::ContactDeleted(result)),
-                            );
+                            sender.command(|out, _| async move {
+                                let (username, pw) = match crate::sync::keyring::load_credentials(&contacts_url).await {
+                                    Ok(Some(creds)) => creds,
+                                    _ => return out.emit(CommandMsg::ContactDeleted(Err("No CardDAV credentials".to_string()))),
+                                };
+                                let client = match crate::sync::carddav::CardDavClient::new(&contacts_url, &username, &pw) {
+                                    Ok(c) => c,
+                                    Err(e) => return out.emit(CommandMsg::ContactDeleted(Err(e))),
+                                };
+                                let result = client.delete_contact(&href).await;
+                                out.emit(CommandMsg::ContactDeleted(result));
+                            });
                         }
                     }
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -1017,6 +1161,7 @@ impl Application for Lamp {
                 if let Some(c) = self.contacts.get_mut(idx) {
                     c.groups = groups.clone();
                     self.save_contacts();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -1038,6 +1183,7 @@ impl Application for Lamp {
                 if let Some(c) = self.contacts.get_mut(idx) {
                     c.last_contacted = Some(chrono::Local::now().date_naive());
                     self.save_contacts();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -1048,11 +1194,13 @@ impl Application for Lamp {
                 if self.editing_contact == Some(idx) {
                     self.editing_contact = None;
                 }
+                self.needs_rebuild = true;
             }
 
             Message::EditContact(idx) => {
                 self.flipped_contacts.insert(idx);
                 self.editing_contact = Some(idx);
+                self.needs_rebuild = true;
             }
 
             // Accounts
@@ -1066,15 +1214,18 @@ impl Application for Lamp {
                     self.accounts.push(Account::new(name));
                     self.account_input.clear();
                     self.save_accounts();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::ConfirmDeleteAccount(idx) => {
                 self.pending_delete_account = Some(idx);
+                self.needs_rebuild = true;
             }
 
             Message::CancelDeleteAccount => {
                 self.pending_delete_account = None;
+                self.needs_rebuild = true;
             }
 
             Message::DeleteAccount(idx) => {
@@ -1082,14 +1233,9 @@ impl Application for Lamp {
                 if idx < self.accounts.len() {
                     let removed = self.accounts.remove(idx);
                     self.expanded_account = None;
-                    // Archive to closed_accounts.org
-                    if let Err(e) = OrgWriter::append_account_to_file(
-                        &self.config.closed_accounts_path(),
-                        &removed,
-                    ) {
-                        log::error!("Failed to archive account: {}", e);
-                    }
+                    let _ = OrgWriter::append_account_to_file(&self.config.closed_accounts_path(), &removed);
                     self.save_accounts();
+                    self.needs_rebuild = true;
                 }
             }
 
@@ -1108,18 +1254,16 @@ impl Application for Lamp {
                 if let Some(a) = self.accounts.get_mut(idx) {
                     a.last_checked = Some(chrono::Local::now().date_naive());
                     self.save_accounts();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::OpenAccountUrl(idx) => {
                 if let Some(a) = self.accounts.get(idx) {
                     if !a.url.is_empty() {
-                        if let Err(e) = std::process::Command::new(&self.config.browser_command)
+                        let _ = std::process::Command::new(&self.config.browser_command)
                             .arg(&a.url)
-                            .spawn()
-                        {
-                            log::error!("Failed to open URL: {}", e);
-                        }
+                            .spawn();
                     }
                 }
             }
@@ -1130,6 +1274,7 @@ impl Application for Lamp {
                 } else {
                     self.expanded_account = Some(idx);
                 }
+                self.needs_rebuild = true;
             }
 
             // Notes CRUD
@@ -1145,45 +1290,33 @@ impl Application for Lamp {
                     self.notes.push(note);
                     self.note_input.clear();
                     self.notes.sort_by(|a, b| a.title.cmp(&b.title));
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::FlipNote(id) => {
-                // If exiting edit mode, commit all pending edits and save
                 if self.editing_note == Some(id) && self.flipped_notes.contains(&id) {
-                    // Commit edit buffer (title, tags, source)
                     if let Some(buf) = self.note_edit_buffer.take() {
                         if buf.id == id {
                             if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
                                 note.title = buf.title;
-                                note.tags = buf.tags
-                                    .split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect();
+                                note.tags = buf.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                                 note.source = if buf.source.is_empty() { None } else { Some(buf.source) };
                             }
                         }
                     }
-
-                    // Commit text_editor body
-                    if let Some((eid, ref content)) = self.note_editor_content {
+                    if let Some((eid, ref body)) = self.note_body_buffer {
                         if eid == id {
                             if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
-                                note.body = content.text();
-                                if note.body.ends_with('\n') {
-                                    note.body.pop();
-                                }
+                                note.body = body.clone();
+                                if note.body.ends_with('\n') { note.body.pop(); }
                             }
                         }
                     }
-                    self.note_editor_content = None;
-
-                    // Update modified timestamp
+                    self.note_body_buffer = None;
                     if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
                         note.modified = chrono::Local::now().naive_local();
                     }
-
                     self.editing_note = None;
                     self.note_link_search.clear();
                     if let Some(note) = self.notes.iter().find(|n| n.id == id) {
@@ -1194,14 +1327,14 @@ impl Application for Lamp {
                 } else {
                     self.flipped_notes.insert(id);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::EditNote(id) => {
                 self.editing_note = Some(id);
                 self.flipped_notes.insert(id);
                 if let Some(note) = self.notes.iter().find(|n| n.id == id) {
-                    self.note_editor_content =
-                        Some((id, text_editor::Content::with_text(&note.body)));
+                    self.note_body_buffer = Some((id, note.body.clone()));
                     self.note_edit_buffer = Some(NoteEditBuffer {
                         id,
                         title: note.title.clone(),
@@ -1209,32 +1342,34 @@ impl Application for Lamp {
                         source: note.source.clone().unwrap_or_default(),
                     });
                 }
+                self.needs_rebuild = true;
             }
 
-            Message::NoteEditorAction(action) => {
-                if let Some((_, ref mut content)) = self.note_editor_content {
-                    content.perform(action);
+            Message::NoteBodyChanged(body) => {
+                if let Some((id, _)) = &self.note_body_buffer {
+                    self.note_body_buffer = Some((*id, body));
                 }
             }
 
             Message::SetNoteField(_id, field, value) => {
-                // Write to edit buffer only — committed on Done (FlipNote).
                 if let Some(ref mut buf) = self.note_edit_buffer {
                     match field {
                         NoteField::Title => buf.title = value,
                         NoteField::Tags => buf.tags = value,
                         NoteField::Source => buf.source = value,
-                        NoteField::Body => {} // handled by text_editor
+                        NoteField::Body => {}
                     }
                 }
             }
 
             Message::ConfirmDeleteNote(id) => {
                 self.pending_delete_note = Some(id);
+                self.needs_rebuild = true;
             }
 
             Message::CancelDeleteNote => {
                 self.pending_delete_note = None;
+                self.needs_rebuild = true;
             }
 
             Message::DeleteNote(id) => {
@@ -1243,10 +1378,11 @@ impl Application for Lamp {
                 self.flipped_notes.remove(&id);
                 if self.editing_note == Some(id) {
                     self.editing_note = None;
-                    self.note_editor_content = None;
+                    self.note_body_buffer = None;
                 }
                 self.backlink_index = build_backlink_index(&self.notes);
                 self.delete_note_file(id);
+                self.needs_rebuild = true;
             }
 
             Message::AddNoteLink(note_id, ref target) => {
@@ -1261,6 +1397,7 @@ impl Application for Lamp {
                 if let Some(note) = self.notes.iter().find(|n| n.id == note_id) {
                     self.save_note(note);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::RemoveNoteLink(note_id, ref target) => {
@@ -1273,11 +1410,11 @@ impl Application for Lamp {
                 if let Some(note) = self.notes.iter().find(|n| n.id == note_id) {
                     self.save_note(note);
                 }
+                self.needs_rebuild = true;
             }
 
             Message::OpenNoteInEditor(id) => {
                 if let Some(note) = self.notes.iter().find(|n| n.id == id) {
-                    // Write the note body to a temp file for editing
                     let note_path = self.config.notes_dir().join(format!("{}.body.txt", note.id));
                     if let Err(e) = std::fs::write(&note_path, &note.body) {
                         log::error!("Failed to write note file: {}", e);
@@ -1286,36 +1423,26 @@ impl Application for Lamp {
                         let note_id = note.id;
                         let path_clone = note_path.clone();
                         let notes_dir = self.config.notes_dir();
-                        // Spawn editor and read back after it exits
-                        match std::process::Command::new(&editor)
-                            .arg(&note_path)
-                            .spawn()
-                        {
+                        match std::process::Command::new(&editor).arg(&note_path).spawn() {
                             Ok(mut child) => {
                                 std::thread::spawn(move || {
                                     let _ = child.wait();
-                                    // Read back the edited body and save to the .org note file
                                     if let Ok(edited_body) = std::fs::read_to_string(&path_clone) {
-                                        // Re-read the .org note, update body, re-write
                                         let org_path = notes_dir.join(format!("{}.org", note_id));
                                         if let Ok(content) = std::fs::read_to_string(&org_path) {
                                             let mut notes = crate::org::convert::parse_notes(&content);
                                             if let Some(note) = notes.iter_mut().find(|n| n.id == note_id) {
                                                 note.body = edited_body.trim().to_string();
                                                 note.modified = chrono::Local::now().naive_local();
-                                                let new_content = crate::org::writer::OrgWriter::write_note_file(note);
+                                                let new_content = OrgWriter::write_note_file(note);
                                                 let _ = std::fs::write(&org_path, new_content);
                                             }
                                         }
                                     }
-                                    // Clean up temp file
                                     let _ = std::fs::remove_file(&path_clone);
-                                    log::info!("Editor closed for note {}", note_id);
                                 });
                             }
-                            Err(e) => {
-                                log::error!("Failed to open editor: {}", e);
-                            }
+                            Err(e) => log::error!("Failed to open editor: {}", e),
                         }
                     }
                 }
@@ -1323,13 +1450,15 @@ impl Application for Lamp {
 
             Message::NoteLinkSearchChanged(value) => {
                 self.note_link_search = value;
+                self.needs_rebuild = true;
             }
 
-            // Daily Planning messages
+            // Daily Planning
             Message::SetSpoonBudget(budget) => {
                 let plan = self.ensure_day_plan();
                 plan.spoon_budget = budget;
                 self.save_day_plan();
+                self.needs_rebuild = true;
             }
 
             Message::TogglePlanContext(ref ctx) => {
@@ -1340,6 +1469,7 @@ impl Application for Lamp {
                     plan.active_contexts.push(ctx.clone());
                 }
                 self.save_day_plan();
+                self.needs_rebuild = true;
             }
 
             Message::ConfirmTask(id) => {
@@ -1348,6 +1478,7 @@ impl Application for Lamp {
                     plan.confirmed_task_ids.push(id);
                 }
                 self.save_day_plan();
+                self.needs_rebuild = true;
             }
 
             Message::UnconfirmTask(id) => {
@@ -1355,102 +1486,74 @@ impl Application for Lamp {
                     plan.confirmed_task_ids.retain(|i| *i != id);
                     self.save_day_plan();
                 }
+                self.needs_rebuild = true;
             }
 
             Message::RejectSuggestion(id) => {
                 self.rejected_suggestions.insert(id);
+                self.needs_rebuild = true;
             }
 
             Message::PickMediaItem(id) => {
                 let plan = self.ensure_day_plan();
-                if !plan.picked_media_ids.contains(&id) {
-                    plan.picked_media_ids.push(id);
-                }
+                if !plan.picked_media_ids.contains(&id) { plan.picked_media_ids.push(id); }
                 self.save_day_plan();
+                self.needs_rebuild = true;
             }
 
             Message::UnpickMediaItem(id) => {
-                if let Some(ref mut plan) = self.day_plan {
-                    plan.picked_media_ids.retain(|i| *i != id);
-                    self.save_day_plan();
-                }
+                if let Some(ref mut plan) = self.day_plan { plan.picked_media_ids.retain(|i| *i != id); self.save_day_plan(); }
+                self.needs_rebuild = true;
             }
 
             Message::PickShoppingItem(id) => {
                 let plan = self.ensure_day_plan();
-                if !plan.picked_shopping_ids.contains(&id) {
-                    plan.picked_shopping_ids.push(id);
-                }
+                if !plan.picked_shopping_ids.contains(&id) { plan.picked_shopping_ids.push(id); }
                 self.save_day_plan();
+                self.needs_rebuild = true;
             }
 
             Message::UnpickShoppingItem(id) => {
-                if let Some(ref mut plan) = self.day_plan {
-                    plan.picked_shopping_ids.retain(|i| *i != id);
-                    self.save_day_plan();
-                }
+                if let Some(ref mut plan) = self.day_plan { plan.picked_shopping_ids.retain(|i| *i != id); self.save_day_plan(); }
+                self.needs_rebuild = true;
             }
 
-            // Do mode messages
+            // Do mode
             Message::DoMarkDone(id) => {
-                // Stop active timer if running for this task
                 if let Some((active_id, start)) = self.active_timer.take() {
                     let now = chrono::Local::now().naive_local();
-                    self.modify_task(active_id, |task| {
-                        task.clock_entries.push((start, now));
-                    });
-                    // If we stopped a different task's timer, don't lose it
-                    if active_id != id {
-                        // Timer was for another task; it's now saved
-                    }
+                    self.modify_task(active_id, |task| { task.clock_entries.push((start, now)); });
                 }
-
                 let is_completed = self.day_plan.as_ref()
                     .map(|p| p.completed_tasks.iter().any(|ct| ct.id == id))
                     .unwrap_or(false);
-
                 if is_completed {
-                    // Un-complete: restore to Next (the expected active state in Do mode)
-                    if let Some(plan) = &mut self.day_plan {
-                        plan.uncomplete_task(id);
-                    }
-                    self.modify_task(id, |task| {
-                        // If the task was confirmed for the day plan it was Next; restore that
-                        task.state = TaskState::Next;
-                        task.completed = None;
-                    });
+                    if let Some(plan) = &mut self.day_plan { plan.uncomplete_task(id); }
+                    self.modify_task(id, |task| { task.state = TaskState::Next; task.completed = None; });
                 } else {
-                    // Complete: mark done in place (no archive)
                     if let Some(plan) = &mut self.day_plan {
                         let task_info = self.all_tasks_cache.iter().find(|t| t.id == id);
                         let title = task_info.map(|t| t.title.clone()).unwrap_or_default();
                         let esc = task_info.and_then(|t| t.esc);
                         plan.complete_task(id, title, esc);
                     }
-                    self.modify_task(id, |task| {
-                        task.state = TaskState::Done;
-                        task.completed = Some(chrono::Local::now().naive_local());
-                    });
+                    self.modify_task(id, |task| { task.state = TaskState::Done; task.completed = Some(chrono::Local::now().naive_local()); });
                 }
                 self.save_day_plan();
                 self.save_all();
                 self.rebuild_cache();
+                self.needs_rebuild = true;
             }
 
             Message::DoMarkListItemDone(id) => {
-                // Archive and remove from master list + day plan
                 if let Some(item) = self.media_items.iter().find(|i| i.id == id) {
-                    if let Err(e) = OrgWriter::append_list_item_to_file(&self.config.consumed_path(), item) {
-                        log::error!("Failed to archive media item: {}", e);
-                    }
+                    let _ = OrgWriter::append_list_item_to_file(&self.config.consumed_path(), item);
                     self.media_items.retain(|i| i.id != id);
                     self.save_media();
                 }
-                if let Some(item) = self.shopping_items.iter().find(|i| i.id == id) {
-                    if let Err(e) = OrgWriter::append_list_item_to_file(&self.config.bought_path(), item) {
-                        log::error!("Failed to archive shopping item: {}", e);
-                    }
-                    self.shopping_items.retain(|i| i.id != id);
+                if let Some(task) = self.shopping_tasks.iter().find(|t| t.id == id) {
+                    let _ = OrgWriter::append_to_file(&self.config.bought_path(), task);
+                    self.shopping_tasks.retain(|t| t.id != id);
                     self.save_shopping();
                 }
                 if let Some(ref mut plan) = self.day_plan {
@@ -1458,29 +1561,24 @@ impl Application for Lamp {
                     plan.picked_shopping_ids.retain(|i| *i != id);
                     self.save_day_plan();
                 }
+                self.needs_rebuild = true;
             }
 
             Message::ToggleWorkTimer(id) => {
                 let now = chrono::Local::now().naive_local();
                 if let Some((active_id, start)) = self.active_timer.take() {
-                    // Stop the running timer and log the clock entry
-                    self.modify_task(active_id, |task| {
-                        task.clock_entries.push((start, now));
-                    });
+                    self.modify_task(active_id, |task| { task.clock_entries.push((start, now)); });
                     self.save_all();
                     self.rebuild_cache();
-                    // If clicking a different task, start its timer
-                    if active_id != id {
-                        self.active_timer = Some((id, now));
-                    }
+                    if active_id != id { self.active_timer = Some((id, now)); }
                 } else {
-                    // Start timer for this task
                     self.active_timer = Some((id, now));
                 }
+                self.needs_rebuild = true;
             }
 
             Message::TimerTick => {
-                // Just triggers a re-render so the timer display updates
+                self.needs_rebuild = true;
             }
 
             Message::SyncAnimTick => {
@@ -1492,41 +1590,29 @@ impl Application for Lamp {
                     Some((c, asc)) if c == col => (col, !asc),
                     _ => (col, true),
                 });
+                self.needs_rebuild = true;
             }
 
-            Message::Save => {
-                self.save_all();
-            }
+            Message::Save => { self.save_all(); }
 
             Message::OpenNewTaskForm => {
                 self.new_task_form = NewTaskForm::default();
-                self.context_drawer_state = Some(ContextDrawerState::NewTask);
-                self.core.window.show_context = true;
+                self.show_capture_dialog = true;
+                self.needs_rebuild = true;
             }
 
             Message::CloseNewTaskForm => {
-                self.context_drawer_state = None;
-                self.core.window.show_context = false;
+                self.show_capture_dialog = false;
                 if self.launch_mode == LaunchMode::Capture {
                     std::process::exit(0);
                 }
+                self.needs_rebuild = true;
             }
 
-            Message::CaptureFormTitle(value) => {
-                self.new_task_form.title = value;
-            }
-
-            Message::CaptureFormState(state) => {
-                self.new_task_form.state = state;
-            }
-
-            Message::CaptureFormPriority(priority) => {
-                self.new_task_form.priority = priority;
-            }
-
-            Message::CaptureFormEsc(esc) => {
-                self.new_task_form.esc = esc;
-            }
+            Message::CaptureFormTitle(value) => { self.new_task_form.title = value; }
+            Message::CaptureFormState(state) => { self.new_task_form.state = state; }
+            Message::CaptureFormPriority(priority) => { self.new_task_form.priority = priority; }
+            Message::CaptureFormEsc(esc) => { self.new_task_form.esc = esc; }
 
             Message::CaptureFormToggleContext(ref ctx) => {
                 if let Some(pos) = self.new_task_form.contexts.iter().position(|c| c == ctx) {
@@ -1534,63 +1620,23 @@ impl Application for Lamp {
                 } else {
                     self.new_task_form.contexts.push(ctx.clone());
                 }
+                self.needs_rebuild = true;
             }
 
-            Message::CaptureFormProject(project) => {
-                self.new_task_form.project = project;
-            }
-
-            Message::CaptureFormScheduled(value) => {
-                self.new_task_form.scheduled = value;
-                self.new_task_form.scheduled_error = None;
-            }
-
-            Message::CaptureFormDeadline(value) => {
-                self.new_task_form.deadline = value;
-                self.new_task_form.deadline_error = None;
-            }
-
-            Message::CaptureFormNotes(value) => {
-                self.new_task_form.notes = value;
-            }
+            Message::CaptureFormProject(project) => { self.new_task_form.project = project; self.needs_rebuild = true; }
+            Message::CaptureFormScheduled(value) => { self.new_task_form.scheduled = value; self.new_task_form.scheduled_error = None; }
+            Message::CaptureFormDeadline(value) => { self.new_task_form.deadline = value; self.new_task_form.deadline_error = None; }
+            Message::CaptureFormNotes(value) => { self.new_task_form.notes = value; }
 
             Message::CaptureFormSubmit => {
                 let title = sentence_case(&self.new_task_form.title);
                 if !title.is_empty() {
-                    // Validate dates before creating task
-                    let sched_result = {
-                        let s = self.new_task_form.scheduled.trim().to_string();
-                        if s.is_empty() {
-                            Ok(None)
-                        } else {
-                            chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                                .map(Some)
-                                .map_err(|e| format!("{}", e))
-                        }
-                    };
-                    let dead_result = {
-                        let s = self.new_task_form.deadline.trim().to_string();
-                        if s.is_empty() {
-                            Ok(None)
-                        } else {
-                            chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                                .map(Some)
-                                .map_err(|e| format!("{}", e))
-                        }
-                    };
-
+                    let sched = parse_optional_date(&self.new_task_form.scheduled);
+                    let dead = parse_optional_date(&self.new_task_form.deadline);
                     let mut has_error = false;
-                    if let Err(ref e) = sched_result {
-                        self.new_task_form.scheduled_error = Some(e.clone());
-                        has_error = true;
-                    }
-                    if let Err(ref e) = dead_result {
-                        self.new_task_form.deadline_error = Some(e.clone());
-                        has_error = true;
-                    }
-                    if has_error {
-                        return CosmicTask::none();
-                    }
+                    if let Err(ref e) = sched { self.new_task_form.scheduled_error = Some(e.clone()); has_error = true; }
+                    if let Err(ref e) = dead { self.new_task_form.deadline_error = Some(e.clone()); has_error = true; }
+                    if has_error { self.needs_rebuild = true; return; }
 
                     let mut task = Task::new(title);
                     task.state = self.new_task_form.state.clone();
@@ -1598,8 +1644,8 @@ impl Application for Lamp {
                     task.esc = self.new_task_form.esc;
                     task.contexts = self.new_task_form.contexts.clone();
                     task.project = self.new_task_form.project.clone();
-                    task.scheduled = sched_result.unwrap();
-                    task.deadline = dead_result.unwrap();
+                    task.scheduled = sched.unwrap();
+                    task.deadline = dead.unwrap();
                     task.notes = self.new_task_form.notes.trim().to_string();
 
                     if let Some(ref project_name) = task.project {
@@ -1607,36 +1653,30 @@ impl Application for Lamp {
                         if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
                             project.tasks.push(task);
                         } else {
-                            // Project doesn't exist, fall back to state-based routing
                             self.route_task_by_state(task);
                         }
                     } else {
                         self.route_task_by_state(task);
                     }
                     self.save_all();
-
-                    // Close the drawer
-                    self.context_drawer_state = None;
-                    self.core.window.show_context = false;
-                    if self.launch_mode == LaunchMode::Capture {
-                        std::process::exit(0);
-                    }
+                    self.show_capture_dialog = false;
+                    if self.launch_mode == LaunchMode::Capture { std::process::exit(0); }
+                    self.needs_rebuild = true;
                 }
             }
 
-            // --- Sync messages (multi-account) ---
+            Message::ConfigChanged => {}
+            Message::Loaded(_) => {}
+
+            // --- Sync ---
             Message::SyncNow => {
-                if self.sync_status == SyncStatus::Syncing {
-                    return CosmicTask::none();
-                }
+                if self.sync_status == SyncStatus::Syncing { return; }
                 self.sync_status = SyncStatus::Syncing;
+                let mut ops = 0;
 
-                let mut batch: Vec<CosmicTask<Message>> = Vec::new();
-
-                // CalDAV task/event sync (only if configured)
                 if self.config.sync_ready() {
+                    ops += 1;
                     let mut tasks: Vec<Task> = self.all_active_tasks();
-                    // Stamp dayplan_date on tasks confirmed in today's plan
                     if let Some(ref plan) = self.day_plan {
                         for task in &mut tasks {
                             if plan.confirmed_task_ids.contains(&task.id) {
@@ -1653,254 +1693,96 @@ impl Application for Lamp {
                     let sync_tokens = self.config.sync_tokens.clone();
                     let completions = self.pending_completions.clone();
                     let deletions = self.pending_deletions.clone();
-
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let (username, password) = match crate::sync::keyring::load_credentials(&caldav_url).await {
-                                Ok(Some(creds)) => creds,
-                                Ok(None) => return Err("No CalDAV credentials stored".to_string()),
-                                Err(e) => return Err(format!("Keyring error: {}", e)),
-                            };
-                            crate::sync::sync_all(
-                                &caldav_url,
-                                &username,
-                                &password,
-                                &tasks,
-                                &events,
-                                &task_cals,
-                                &event_cals,
-                                &sync_tokens,
-                                &completions,
-                                &deletions,
-                            )
-                            .await
-                        },
-                        |result| cosmic::Action::App(Message::SyncCompleted(result)),
-                    ));
+                    sender.command(|out, _| async move {
+                        let (username, password) = match crate::sync::keyring::load_credentials(&caldav_url).await {
+                            Ok(Some(creds)) => creds,
+                            Ok(None) => return out.emit(CommandMsg::SyncCompleted(Err("No CalDAV credentials stored".to_string()))),
+                            Err(e) => return out.emit(CommandMsg::SyncCompleted(Err(format!("Keyring error: {}", e)))),
+                        };
+                        let result = crate::sync::sync_all(&caldav_url, &username, &password, &tasks, &events, &task_cals, &event_cals, &sync_tokens, &completions, &deletions).await;
+                        out.emit(CommandMsg::SyncCompleted(result));
+                    });
                 }
 
-                // WebDAV notes + shopping + accounts sync
                 let notes_url = self.config.notes_sync.url.trim().to_string();
                 if !notes_url.is_empty() {
-                    let notes_url1 = notes_url.clone();
+                    ops += 2; // notes + accounts
                     let local_notes = self.notes.clone();
                     let notes_dir = self.config.notes_dir();
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url1).await {
-                                Ok(Some(creds)) => creds,
-                                Ok(None) => return Err("No WebDAV credentials stored".to_string()),
-                                Err(e) => return Err(format!("Keyring error: {}", e)),
-                            };
-                            let client = crate::sync::webdav::WebDavClient::new(
-                                &notes_url1, &username, &pw,
-                            )?;
-                            crate::sync::webdav::sync_notes(&client, &local_notes, &notes_dir).await
-                        },
-                        |result| cosmic::Action::App(Message::SyncNotesCompleted(result)),
-                    ));
-
-                    let shopping_items = self.shopping_items.clone();
-                    let notes_url2 = notes_url.clone();
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url2).await {
-                                Ok(Some(creds)) => creds,
-                                Ok(None) => return Err("No WebDAV credentials stored".to_string()),
-                                Err(e) => return Err(format!("Keyring error: {}", e)),
-                            };
-                            let client = crate::sync::webdav::WebDavClient::new(
-                                &notes_url2, &username, &pw,
-                            )?;
-                            crate::sync::webdav::sync_shopping(&client, &shopping_items).await
-                        },
-                        |result| cosmic::Action::App(Message::SyncShoppingCompleted(result)),
-                    ));
+                    let notes_url1 = notes_url.clone();
+                    sender.command(|out, _| async move {
+                        let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url1).await {
+                            Ok(Some(creds)) => creds,
+                            Ok(None) => return out.emit(CommandMsg::SyncNotesCompleted(Err("No WebDAV credentials".to_string()))),
+                            Err(e) => return out.emit(CommandMsg::SyncNotesCompleted(Err(format!("Keyring error: {}", e)))),
+                        };
+                        let client = match crate::sync::webdav::WebDavClient::new(&notes_url1, &username, &pw) {
+                            Ok(c) => c,
+                            Err(e) => return out.emit(CommandMsg::SyncNotesCompleted(Err(e))),
+                        };
+                        let result = crate::sync::webdav::sync_notes(&client, &local_notes, &notes_dir).await;
+                        out.emit(CommandMsg::SyncNotesCompleted(result));
+                    });
 
                     let accounts = self.accounts.clone();
-                    let notes_url3 = notes_url;
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url3).await {
-                                Ok(Some(creds)) => creds,
-                                Ok(None) => return Err("No WebDAV credentials stored".to_string()),
-                                Err(e) => return Err(format!("Keyring error: {}", e)),
-                            };
-                            let client = crate::sync::webdav::WebDavClient::new(
-                                &notes_url3, &username, &pw,
-                            )?;
-                            crate::sync::webdav::sync_accounts(&client, &accounts).await
-                        },
-                        |result| cosmic::Action::App(Message::SyncAccountsCompleted(result)),
-                    ));
+                    sender.command(|out, _| async move {
+                        let (username, pw) = match crate::sync::keyring::load_credentials(&notes_url).await {
+                            Ok(Some(creds)) => creds,
+                            Ok(None) => return out.emit(CommandMsg::SyncAccountsCompleted(Err("No WebDAV credentials".to_string()))),
+                            Err(e) => return out.emit(CommandMsg::SyncAccountsCompleted(Err(format!("Keyring error: {}", e)))),
+                        };
+                        let client = match crate::sync::webdav::WebDavClient::new(&notes_url, &username, &pw) {
+                            Ok(c) => c,
+                            Err(e) => return out.emit(CommandMsg::SyncAccountsCompleted(Err(e))),
+                        };
+                        let result = crate::sync::webdav::sync_accounts(&client, &accounts).await;
+                        out.emit(CommandMsg::SyncAccountsCompleted(result));
+                    });
                 }
 
-                // CardDAV contacts sync
                 let contacts_url = self.config.contacts.url.trim().to_string();
                 if !contacts_url.is_empty() {
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&contacts_url).await {
-                                Ok(Some((u, pw))) => (u, pw),
-                                _ => return Err("No CardDAV credentials stored".to_string()),
-                            };
-                            let client = crate::sync::carddav::CardDavClient::new(
-                                &contacts_url, &username, &pw,
-                            )?;
-                            client.fetch_contacts().await
-                        },
-                        |result| cosmic::Action::App(Message::ContactsFetched(result)),
-                    ));
+                    ops += 1;
+                    sender.command(|out, _| async move {
+                        let (username, pw) = match crate::sync::keyring::load_credentials(&contacts_url).await {
+                            Ok(Some((u, pw))) => (u, pw),
+                            _ => return out.emit(CommandMsg::ContactsFetched(Err("No CardDAV credentials".to_string()))),
+                        };
+                        let client = match crate::sync::carddav::CardDavClient::new(&contacts_url, &username, &pw) {
+                            Ok(c) => c,
+                            Err(e) => return out.emit(CommandMsg::ContactsFetched(Err(e))),
+                        };
+                        let result = client.fetch_contacts().await;
+                        out.emit(CommandMsg::ContactsFetched(result));
+                    });
                 }
 
-                // IMAP email fetch
                 let imap_host = self.config.imap.host.trim().to_string();
                 if !imap_host.is_empty() {
-                    let folder = if self.config.imap.folder.is_empty() {
-                        "INBOX".to_string()
-                    } else {
-                        self.config.imap.folder.clone()
-                    };
-                    batch.push(CosmicTask::perform(
-                        async move {
-                            let keyring_key = format!("imap://{}", imap_host);
-                            let (username, pw) = match crate::sync::keyring::load_credentials(&keyring_key).await {
-                                Ok(Some(creds)) => creds,
-                                _ => return Err("No IMAP credentials stored".to_string()),
-                            };
-                            crate::sync::imap::fetch_emails(&imap_host, &username, &pw, &folder).await
-                        },
-                        |result| cosmic::Action::App(Message::ImapFetched(result)),
-                    ));
+                    ops += 1;
+                    let folder = if self.config.imap.folder.is_empty() { "INBOX".to_string() } else { self.config.imap.folder.clone() };
+                    sender.command(|out, _| async move {
+                        let keyring_key = format!("imap://{}", imap_host);
+                        let (username, pw) = match crate::sync::keyring::load_credentials(&keyring_key).await {
+                            Ok(Some(creds)) => creds,
+                            _ => return out.emit(CommandMsg::ImapFetched(Err("No IMAP credentials".to_string()))),
+                        };
+                        let result = crate::sync::imap::fetch_emails(&imap_host, &username, &pw, &folder).await;
+                        out.emit(CommandMsg::ImapFetched(result));
+                    });
                 }
 
-                if batch.is_empty() {
-                    self.sync_status = SyncStatus::default();
-                    return CosmicTask::none();
+                if ops == 0 {
+                    self.sync_status = SyncStatus::Error("No sync services configured. Set up CalDAV, WebDAV, or IMAP in Settings.".to_string());
                 }
-                self.sync_ops_pending = batch.len();
-                return CosmicTask::batch(batch);
+                self.sync_ops_pending = ops;
+                self.needs_rebuild = true;
             }
 
-            Message::SyncCompleted(result) => {
-                match result {
-                    Ok(sync_result) => {
-                        // Update sync tokens
-                        for (href, token) in &sync_result.new_sync_tokens {
-                            self.config.set_sync_token(href, token);
-                        }
-
-                        // Archive tasks deleted on remote (never hard-delete)
-                        let archive_path = self.config.archive_path();
-                        for id in &sync_result.deleted_local {
-                            // Find the task to archive it before removal
-                            let task = self.inbox_tasks.iter()
-                                .chain(self.next_tasks.iter())
-                                .chain(self.waiting_tasks.iter())
-                                .chain(self.someday_tasks.iter())
-                                .chain(self.projects.iter().flat_map(|p| p.tasks.iter()))
-                                .find(|t| t.id == *id)
-                                .cloned();
-                            if let Some(task) = task {
-                                if let Err(e) = OrgWriter::append_to_file(&archive_path, &task) {
-                                    log::error!("Failed to archive remotely-deleted task: {}", e);
-                                }
-                            }
-                            self.inbox_tasks.retain(|t| t.id != *id);
-                            self.next_tasks.retain(|t| t.id != *id);
-                            self.waiting_tasks.retain(|t| t.id != *id);
-                            self.someday_tasks.retain(|t| t.id != *id);
-                            for project in &mut self.projects {
-                                project.tasks.retain(|t| t.id != *id);
-                            }
-                        }
-
-                        // Rebuild index after deletions so remove_task can find tasks
-                        self.rebuild_task_index();
-
-                        // Apply pulled tasks (new + updated)
-                        for pulled in &sync_result.pulled {
-                            // Check if this task belongs to a habit — update the habit's
-                            // task in place rather than routing into a task list.
-                            if let Some(habit) = self.habits.iter_mut().find(|h| h.task.id == pulled.id) {
-                                habit.task = pulled.clone();
-                                continue;
-                            }
-                            let _existing = self.remove_task(pulled.id);
-                            if let Some(ref project_name) = pulled.project {
-                                let project_name = project_name.clone();
-                                if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
-                                    project.tasks.push(pulled.clone());
-                                    continue;
-                                }
-                            }
-                            self.route_task_by_state(pulled.clone());
-                        }
-                        self.save_habits();
-
-                        // Purge habit tasks that leaked into task lists
-                        // (habits are the authoritative store for their tasks)
-                        let habit_ids: HashSet<uuid::Uuid> = self.habits.iter().map(|h| h.task.id).collect();
-                        self.inbox_tasks.retain(|t| !habit_ids.contains(&t.id));
-                        self.next_tasks.retain(|t| !habit_ids.contains(&t.id));
-                        self.waiting_tasks.retain(|t| !habit_ids.contains(&t.id));
-                        self.someday_tasks.retain(|t| !habit_ids.contains(&t.id));
-                        for project in &mut self.projects {
-                            project.tasks.retain(|t| !habit_ids.contains(&t.id));
-                        }
-
-                        // Reconstruct day plan from synced dayplan_date fields
-                        let today = chrono::Local::now().date_naive();
-                        let mut synced_plan_ids: Vec<uuid::Uuid> = Vec::new();
-                        for pulled in &sync_result.pulled {
-                            if pulled.dayplan_date == Some(today) {
-                                synced_plan_ids.push(pulled.id);
-                            }
-                        }
-                        if !synced_plan_ids.is_empty() {
-                            let plan = self.ensure_day_plan();
-                            for id in synced_plan_ids {
-                                if !plan.confirmed_task_ids.contains(&id) {
-                                    plan.confirmed_task_ids.push(id);
-                                }
-                            }
-                            self.save_day_plan();
-                        }
-
-                        // Remove deleted events
-                        for id in &sync_result.deleted_events {
-                            self.events.retain(|e| e.id != *id);
-                        }
-
-                        // Apply pulled events
-                        for pulled_event in &sync_result.pulled_events {
-                            self.events.retain(|e| e.id != pulled_event.id);
-                            self.events.push(pulled_event.clone());
-                        }
-
-                        self.save_events();
-                        self.save_all();
-                        self.save_config();
-
-                        // Clear pending operations that were successfully sent
-                        self.pending_completions.clear();
-                        self.pending_deletions.clear();
-
-                        self.sync_conflicts = sync_result.conflicts;
-
-                        if !sync_result.errors.is_empty() {
-                            log::warn!("Sync completed with errors: {:?}", sync_result.errors);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Sync failed: {}", e);
-                        // Only set error if we're not already showing an error from another op
-                        if self.sync_status == SyncStatus::Syncing {
-                            self.sync_status = SyncStatus::Error(e);
-                        }
-                    }
-                }
-                self.finish_sync_op();
+            Message::SyncCompleted(_) | Message::SyncNotesCompleted(_) | Message::SyncAccountsCompleted(_)
+            | Message::ContactsFetched(_) | Message::ContactDeleted(_) | Message::ImapFetched(_)
+            | Message::EmailArchived(_) | Message::ServiceConnectionTested(_, _, _) => {
+                // These are handled via CommandMsg now
             }
 
             Message::SetServiceUrl(kind, url) => {
@@ -1924,321 +1806,92 @@ impl Application for Lamp {
             }
 
             Message::SetServicePassword(kind, password) => {
-                let idx = kind as usize;
-                self.service_passwords[idx] = password;
+                self.service_passwords[kind as usize] = password;
             }
 
             Message::TestServiceConnection(kind) => {
                 let idx = kind as usize;
-
                 if kind == ServiceKind::Imap {
-                    // IMAP uses host, not URL
                     let host = self.config.imap.host.trim().to_string();
-                    if host.is_empty() {
-                        self.service_test_status[idx] = Some(Err("IMAP host is required".to_string()));
-                        return CosmicTask::none();
-                    }
                     let username = self.config.imap.username.clone();
-                    if username.is_empty() {
-                        self.service_test_status[idx] = Some(Err("Username is required".to_string()));
-                        return CosmicTask::none();
-                    }
                     let password = self.service_passwords[idx].clone();
                     self.service_test_status[idx] = None;
-
-                    return CosmicTask::perform(
-                        async move {
-                            let keyring_key = format!("imap://{}", host);
-                            if !password.is_empty() {
-                                let _ = crate::sync::keyring::store_credentials(
-                                    &keyring_key, &username, &password,
-                                ).await;
-                            }
-                            let pw = if !password.is_empty() {
-                                password
-                            } else {
-                                match crate::sync::keyring::load_credentials(&keyring_key).await {
-                                    Ok(Some((_, pw))) => pw,
-                                    _ => return Err((kind, "No password available — enter an app password".to_string())),
-                                }
-                            };
-                            let msg = crate::sync::imap::test_connection(&host, &username, &pw)
-                                .await
-                                .map_err(|e| (kind, e))?;
-                            Ok((kind, msg, Vec::new()))
-                        },
-                        |result| {
-                            match result {
-                                Ok((kind, msg, cals)) => {
-                                    cosmic::Action::App(Message::ServiceConnectionTested(kind, Ok(msg), cals))
-                                }
-                                Err((kind, e)) => {
-                                    cosmic::Action::App(Message::ServiceConnectionTested(kind, Err(e), Vec::new()))
-                                }
-                            }
-                        },
-                    );
-                }
-
-                let svc = match kind {
-                    ServiceKind::Calendars => &self.config.calendars,
-                    ServiceKind::Contacts => &self.config.contacts,
-                    ServiceKind::Notes => &self.config.notes_sync,
-                    ServiceKind::Imap => unreachable!(),
-                };
-                let url = svc.url.trim().to_string();
-                if url.is_empty() || !url.starts_with("https://") {
-                    self.service_test_status[idx] = Some(Err("URL must start with https://".to_string()));
-                    return CosmicTask::none();
-                }
-                let username = svc.username.clone();
-                if username.is_empty() {
-                    self.service_test_status[idx] = Some(Err("Username is required".to_string()));
-                    return CosmicTask::none();
-                }
-                let password = self.service_passwords[idx].clone();
-                self.service_test_status[idx] = None;
-
-                return CosmicTask::perform(
-                    async move {
-                        // Store credentials if password provided
+                    sender.command(move |out, _| async move {
+                        let keyring_key = format!("imap://{}", host);
                         if !password.is_empty() {
-                            let _ = crate::sync::keyring::store_credentials(
-                                &url, &username, &password,
-                            ).await;
+                            let _ = crate::sync::keyring::store_credentials(&keyring_key, &username, &password).await;
                         }
-                        let pw = if !password.is_empty() {
-                            password
-                        } else {
-                            match crate::sync::keyring::load_credentials(&url).await {
+                        let pw = if !password.is_empty() { password } else {
+                            match crate::sync::keyring::load_credentials(&keyring_key).await {
                                 Ok(Some((_, pw))) => pw,
-                                _ => return Err((kind, "No password available — enter an app password".to_string())),
+                                _ => return out.emit(CommandMsg::ServiceConnectionTested(kind, Err("No password".to_string()), Vec::new())),
                             }
                         };
-
+                        match crate::sync::imap::test_connection(&host, &username, &pw).await {
+                            Ok(msg) => out.emit(CommandMsg::ServiceConnectionTested(kind, Ok(msg), Vec::new())),
+                            Err(e) => out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())),
+                        }
+                    });
+                } else {
+                    let svc = match kind {
+                        ServiceKind::Calendars => &self.config.calendars,
+                        ServiceKind::Contacts => &self.config.contacts,
+                        ServiceKind::Notes => &self.config.notes_sync,
+                        ServiceKind::Imap => unreachable!(),
+                    };
+                    let url = svc.url.trim().to_string();
+                    let username = svc.username.clone();
+                    let password = self.service_passwords[idx].clone();
+                    self.service_test_status[idx] = None;
+                    sender.command(move |out, _| async move {
+                        if !password.is_empty() {
+                            let _ = crate::sync::keyring::store_credentials(&url, &username, &password).await;
+                        }
+                        let pw = if !password.is_empty() { password } else {
+                            match crate::sync::keyring::load_credentials(&url).await {
+                                Ok(Some((_, pw))) => pw,
+                                _ => return out.emit(CommandMsg::ServiceConnectionTested(kind, Err("No password".to_string()), Vec::new())),
+                            }
+                        };
                         match kind {
                             ServiceKind::Calendars => {
-                                let client = CalDavClient::new(&url, &username, &pw).map_err(|e| (kind, e))?;
-                                let cals = client.discover_calendars().await.map_err(|e| (kind, e))?;
-                                let msg = format!("Found {} calendars", cals.len());
-                                Ok((kind, msg, cals))
+                                let client = match CalDavClient::new(&url, &username, &pw) { Ok(c) => c, Err(e) => return out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())) };
+                                match client.discover_calendars().await {
+                                    Ok(cals) => out.emit(CommandMsg::ServiceConnectionTested(kind, Ok(format!("Found {} calendars", cals.len())), cals)),
+                                    Err(e) => out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())),
+                                }
                             }
                             ServiceKind::Contacts => {
-                                let client = crate::sync::carddav::CardDavClient::new(&url, &username, &pw).map_err(|e| (kind, e))?;
-                                let contacts = client.fetch_contacts().await.map_err(|e| (kind, e))?;
-                                Ok((kind, format!("Connected ({} contacts)", contacts.len()), Vec::new()))
+                                let client = match crate::sync::carddav::CardDavClient::new(&url, &username, &pw) { Ok(c) => c, Err(e) => return out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())) };
+                                match client.fetch_contacts().await {
+                                    Ok(contacts) => out.emit(CommandMsg::ServiceConnectionTested(kind, Ok(format!("Connected ({} contacts)", contacts.len())), Vec::new())),
+                                    Err(e) => out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())),
+                                }
                             }
                             ServiceKind::Notes => {
-                                let client = crate::sync::webdav::WebDavClient::new(&url, &username, &pw).map_err(|e| (kind, e))?;
-                                client.ensure_collection().await.map_err(|e| (kind, format!("Collection error: {}", e)))?;
-                                let files = client.list_files().await.map_err(|e| (kind, e))?;
-                                Ok((kind, format!("Connected ({} files)", files.len()), Vec::new()))
+                                let client = match crate::sync::webdav::WebDavClient::new(&url, &username, &pw) { Ok(c) => c, Err(e) => return out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())) };
+                                match client.ensure_collection().await {
+                                    Ok(_) => match client.list_files().await {
+                                        Ok(files) => out.emit(CommandMsg::ServiceConnectionTested(kind, Ok(format!("Connected ({} files)", files.len())), Vec::new())),
+                                        Err(e) => out.emit(CommandMsg::ServiceConnectionTested(kind, Err(e), Vec::new())),
+                                    }
+                                    Err(e) => out.emit(CommandMsg::ServiceConnectionTested(kind, Err(format!("Collection error: {}", e)), Vec::new())),
+                                }
                             }
-                            ServiceKind::Imap => unreachable!(),
+                            _ => {}
                         }
-                    },
-                    |result| {
-                        match result {
-                            Ok((kind, msg, cals)) => {
-                                cosmic::Action::App(Message::ServiceConnectionTested(kind, Ok(msg), cals))
-                            }
-                            Err((kind, e)) => {
-                                cosmic::Action::App(Message::ServiceConnectionTested(kind, Err(e), Vec::new()))
-                            }
-                        }
-                    },
-                );
-            }
-
-            Message::ServiceConnectionTested(kind, ref result, ref cals) => {
-                let idx = kind as usize;
-                self.service_test_status[idx] = Some(result.clone());
-
-                if kind == ServiceKind::Calendars {
-                    self.discovered_calendars = cals.clone();
+                    });
                 }
             }
 
             Message::SetCalendarPurpose(ref href, ref purpose) => {
-                // Remove existing assignment for this href
-                self.config
-                    .calendar_assignments
-                    .retain(|a| a.calendar_href != *href);
-                // Add new assignment
-                self.config
-                    .calendar_assignments
-                    .push(crate::config::CalendarAssignment {
-                        calendar_href: href.clone(),
-                        purpose: purpose.clone(),
-                    });
+                self.config.calendar_assignments.retain(|a| a.calendar_href != *href);
+                self.config.calendar_assignments.push(crate::config::CalendarAssignment {
+                    calendar_href: href.clone(),
+                    purpose: purpose.clone(),
+                });
                 self.save_config();
-            }
-
-            Message::SyncNotesCompleted(result) => {
-                match result {
-                    Ok(sync_result) => {
-                        // Apply pulled notes (new + updated from remote)
-                        for pulled in &sync_result.pulled {
-                            self.notes.retain(|n| n.id != pulled.id);
-                            self.notes.push(pulled.clone());
-                        }
-                        self.notes.sort_by(|a, b| a.title.cmp(&b.title));
-                        self.backlink_index = build_backlink_index(&self.notes);
-                        // Save all notes (etags may have been updated)
-                        self.save_all_notes();
-
-                        log::info!(
-                            "Notes sync: {} pulled, {} pushed",
-                            sync_result.pulled.len(),
-                            sync_result.pushed,
-                        );
-                        if !sync_result.errors.is_empty() {
-                            log::warn!("Notes sync errors: {:?}", sync_result.errors);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Notes sync failed: {}", e);
-                    }
-                }
-                self.finish_sync_op();
-            }
-
-            Message::SyncShoppingCompleted(result) => {
-                match result {
-                    Ok(sync_result) => {
-                        self.shopping_items = sync_result.items;
-                        self.save_shopping();
-                        log::info!(
-                            "Shopping sync: {} remote, {} pushed",
-                            sync_result.pulled,
-                            sync_result.pushed,
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Shopping sync failed: {}", e);
-                    }
-                }
-                self.finish_sync_op();
-            }
-
-            Message::SyncAccountsCompleted(result) => {
-                match result {
-                    Ok(sync_result) => {
-                        self.accounts = sync_result.items;
-                        self.save_accounts();
-                        log::info!(
-                            "Accounts sync: {} remote, {} pushed",
-                            sync_result.pulled,
-                            sync_result.pushed,
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Accounts sync failed: {}", e);
-                    }
-                }
-                self.finish_sync_op();
-            }
-
-            Message::ContactsFetched(result) => {
-                match result {
-                    Ok(remote) => {
-                        crate::sync::carddav::merge_contacts(&mut self.contacts, remote);
-                        let _ = crate::sync::carddav::save_contacts(
-                            &self.config.contacts_path(),
-                            &self.contacts,
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Contact fetch failed: {}", e);
-                    }
-                }
-                self.finish_sync_op();
-            }
-
-            Message::ContactDeleted(result) => {
-                if let Err(e) = result {
-                    log::error!("Failed to delete contact from server: {}", e);
-                }
-            }
-
-            // --- IMAP email integration ---
-            Message::ImapFetched(result) => {
-                match result {
-                    Ok(emails) => {
-                        log::info!("IMAP: fetched {} emails", emails.len());
-                        if self.archived_email_uids.is_empty() {
-                            self.imap_emails = emails;
-                        } else {
-                            self.imap_emails = emails
-                                .into_iter()
-                                .filter(|e| !self.archived_email_uids.contains(&e.uid))
-                                .collect();
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("IMAP fetch failed: {}", e);
-                    }
-                }
-                self.finish_sync_op();
-            }
-
-            Message::CreateTaskFromEmail(uid) => {
-                if let Some(email) = self.imap_emails.iter().find(|e| e.uid == uid) {
-                    let mut task = Task::new(&email.subject);
-
-                    // Attach full email content as note
-                    let mut note = format!("From: {}\n", email.from);
-                    if let Some(date) = email.date {
-                        note.push_str(&format!(
-                            "Date: {}\n",
-                            date.format("%Y-%m-%d %H:%M")
-                        ));
-                    }
-                    if !email.body_full.is_empty() {
-                        note.push('\n');
-                        note.push_str(&email.body_full);
-                    }
-                    task.notes = note;
-
-                    self.inbox_tasks.push(task);
-                    self.save_inbox();
-                    self.rebuild_cache();
-
-                    // Auto-archive the email after creating the task
-                    return self.update(Message::ArchiveEmail(uid));
-                }
-            }
-
-            Message::ArchiveEmail(uid) => {
-                let host = self.config.imap.host.trim().to_string();
-                let folder = if self.config.imap.folder.is_empty() {
-                    "INBOX".to_string()
-                } else {
-                    self.config.imap.folder.clone()
-                };
-                return CosmicTask::perform(
-                    async move {
-                        let keyring_key = format!("imap://{}", host);
-                        let (username, pw) = match crate::sync::keyring::load_credentials(&keyring_key).await {
-                            Ok(Some(creds)) => creds,
-                            _ => return Err("No IMAP credentials stored".to_string()),
-                        };
-                        crate::sync::imap::archive_email(&host, &username, &pw, &folder, uid).await
-                    },
-                    |result| cosmic::Action::App(Message::EmailArchived(result)),
-                );
-            }
-
-            Message::EmailArchived(result) => {
-                match result {
-                    Ok(uid) => {
-                        self.imap_emails.retain(|e| e.uid != uid);
-                        self.archived_email_uids.insert(uid);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to archive email: {}", e);
-                    }
-                }
+                self.needs_rebuild = true;
             }
 
             Message::SetImapFolder(folder) => {
@@ -2246,132 +1899,90 @@ impl Application for Lamp {
                 self.save_config();
             }
 
-            // --- Event messages ---
+            Message::ArchiveEmail(uid) => {
+                let host = self.config.imap.host.trim().to_string();
+                let folder = if self.config.imap.folder.is_empty() { "INBOX".to_string() } else { self.config.imap.folder.clone() };
+                sender.command(move |out, _| async move {
+                    let keyring_key = format!("imap://{}", host);
+                    let (username, pw) = match crate::sync::keyring::load_credentials(&keyring_key).await {
+                        Ok(Some(creds)) => creds,
+                        _ => return out.emit(CommandMsg::EmailArchived(Err("No IMAP credentials".to_string()))),
+                    };
+                    let result = crate::sync::imap::archive_email(&host, &username, &pw, &folder, uid).await;
+                    out.emit(CommandMsg::EmailArchived(result));
+                });
+            }
+
+            Message::CreateTaskFromEmail(uid) => {
+                if let Some(email) = self.imap_emails.iter().find(|e| e.uid == uid) {
+                    let mut task = Task::new(&email.subject);
+                    let mut note = format!("From: {}\n", email.from);
+                    if let Some(date) = email.date {
+                        note.push_str(&format!("Date: {}\n", date.format("%Y-%m-%d %H:%M")));
+                    }
+                    if !email.body_full.is_empty() {
+                        note.push('\n');
+                        note.push_str(&email.body_full);
+                    }
+                    task.notes = note;
+                    self.inbox_tasks.push(task);
+                    self.save_inbox();
+                    self.rebuild_cache();
+                    // Archive the email
+                    let s = sender.input_sender().clone();
+                    s.emit(Message::ArchiveEmail(uid));
+                    self.needs_rebuild = true;
+                }
+            }
+
+            // Events
             Message::CreateEvent => {
                 let now = chrono::Local::now();
                 let today = now.format("%Y-%m-%d").to_string();
                 let now_time = now.format("%H:%M").to_string();
                 let hour = now.hour();
-                let default_cal = self
-                    .config
-                    .event_calendar_hrefs()
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
+                let default_cal = self.config.event_calendar_hrefs().first().cloned().unwrap_or_default();
                 self.event_form = Some(EventForm {
-                    editing: None,
-                    title: String::new(),
-                    start_date: today.clone(),
-                    start_time: now_time.clone(),
-                    end_date: if hour >= 23 {
-                        (now.date_naive() + chrono::Duration::days(1))
-                            .format("%Y-%m-%d")
-                            .to_string()
-                    } else {
-                        today
-                    },
+                    editing: None, title: String::new(),
+                    start_date: today.clone(), start_time: now_time,
+                    end_date: if hour >= 23 { (now.date_naive() + chrono::Duration::days(1)).format("%Y-%m-%d").to_string() } else { today },
                     end_time: format!("{:02}:00", (hour + 1) % 24),
-                    all_day: false,
-                    location: String::new(),
-                    description: String::new(),
-                    calendar_href: default_cal,
-                    start_error: None,
-                    end_error: None,
+                    all_day: false, location: String::new(), description: String::new(),
+                    calendar_href: default_cal, start_error: None, end_error: None,
                 });
+                self.needs_rebuild = true;
             }
 
             Message::EditEvent(id) => {
                 if let Some(ev) = self.events.iter().find(|e| e.id == id) {
                     self.event_form = Some(EventForm::from_event(ev));
                 }
+                self.needs_rebuild = true;
             }
 
-            Message::CancelEventForm => {
-                self.event_form = None;
-            }
-
-            Message::SetEventTitle(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.title = value;
-                }
-            }
-
-            Message::SetEventStart(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.start_date = value;
-                    form.start_error = None;
-                }
-            }
-
-            Message::SetEventStartTime(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.start_time = value;
-                    form.start_error = None;
-                }
-            }
-
-            Message::SetEventEnd(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.end_date = value;
-                    form.end_error = None;
-                }
-            }
-
-            Message::SetEventEndTime(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.end_time = value;
-                    form.end_error = None;
-                }
-            }
-
-            Message::SetEventAllDay(all_day) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.all_day = all_day;
-                }
-            }
-
-            Message::SetEventLocation(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.location = value;
-                }
-            }
-
-            Message::SetEventDescription(value) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.description = value;
-                }
-            }
-
-            Message::SetEventCalendar(href) => {
-                if let Some(ref mut form) = self.event_form {
-                    form.calendar_href = href;
-                }
-            }
+            Message::CancelEventForm => { self.event_form = None; self.needs_rebuild = true; }
+            Message::SetEventTitle(value) => { if let Some(ref mut f) = self.event_form { f.title = value; } }
+            Message::SetEventStart(value) => { if let Some(ref mut f) = self.event_form { f.start_date = value; f.start_error = None; } }
+            Message::SetEventStartTime(value) => { if let Some(ref mut f) = self.event_form { f.start_time = value; f.start_error = None; } }
+            Message::SetEventEnd(value) => { if let Some(ref mut f) = self.event_form { f.end_date = value; f.end_error = None; } }
+            Message::SetEventEndTime(value) => { if let Some(ref mut f) = self.event_form { f.end_time = value; f.end_error = None; } }
+            Message::SetEventAllDay(v) => { if let Some(ref mut f) = self.event_form { f.all_day = v; } }
+            Message::SetEventLocation(value) => { if let Some(ref mut f) = self.event_form { f.location = value; } }
+            Message::SetEventDescription(value) => { if let Some(ref mut f) = self.event_form { f.description = value; } }
+            Message::SetEventCalendar(href) => { if let Some(ref mut f) = self.event_form { f.calendar_href = href; } }
 
             Message::SubmitEvent => {
                 if let Some(mut form) = self.event_form.take() {
                     let title = form.title.trim().to_string();
-                    if title.is_empty() {
-                        self.event_form = Some(form);
-                        return CosmicTask::none();
-                    }
+                    if title.is_empty() { self.event_form = Some(form); return; }
                     let start = parse_form_datetime(&form.start_date, &form.start_time, form.all_day);
                     let end = parse_form_datetime(&form.end_date, &form.end_time, form.all_day);
-                    if start.is_none() {
-                        form.start_error = Some(crate::fl!("validation-invalid-date"));
-                    }
-                    if end.is_none() {
-                        form.end_error = Some(crate::fl!("validation-invalid-date"));
-                    }
-                    if start.is_none() || end.is_none() {
-                        self.event_form = Some(form);
-                        return CosmicTask::none();
-                    }
+                    if start.is_none() { form.start_error = Some(crate::fl!("validation-invalid-date")); }
+                    if end.is_none() { form.end_error = Some(crate::fl!("validation-invalid-date")); }
+                    if start.is_none() || end.is_none() { self.event_form = Some(form); self.needs_rebuild = true; return; }
                     let (start, end) = (start.unwrap(), end.unwrap());
                     let cal_name = self.all_discovered_calendars().iter()
-                        .find(|c| c.href == form.calendar_href)
-                        .map(|c| c.display_name.clone())
-                        .unwrap_or_default();
+                        .find(|c| c.href == form.calendar_href).map(|c| c.display_name.clone()).unwrap_or_default();
                     let mut ev = CalendarEvent::new(title, start, end);
                     ev.all_day = form.all_day;
                     ev.location = form.location;
@@ -2380,110 +1991,73 @@ impl Application for Lamp {
                     ev.calendar_name = cal_name;
                     self.events.push(ev);
                     self.save_events();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::UpdateEvent(id) => {
                 if let Some(mut form) = self.event_form.take() {
                     let title = form.title.trim().to_string();
-                    if title.is_empty() {
-                        self.event_form = Some(form);
-                        return CosmicTask::none();
-                    }
+                    if title.is_empty() { self.event_form = Some(form); return; }
                     let start = parse_form_datetime(&form.start_date, &form.start_time, form.all_day);
                     let end = parse_form_datetime(&form.end_date, &form.end_time, form.all_day);
-                    if start.is_none() {
-                        form.start_error = Some(crate::fl!("validation-invalid-date"));
-                    }
-                    if end.is_none() {
-                        form.end_error = Some(crate::fl!("validation-invalid-date"));
-                    }
-                    if start.is_none() || end.is_none() {
-                        self.event_form = Some(form);
-                        return CosmicTask::none();
-                    }
+                    if start.is_none() { form.start_error = Some(crate::fl!("validation-invalid-date")); }
+                    if end.is_none() { form.end_error = Some(crate::fl!("validation-invalid-date")); }
+                    if start.is_none() || end.is_none() { self.event_form = Some(form); self.needs_rebuild = true; return; }
                     let (start, end) = (start.unwrap(), end.unwrap());
                     if let Some(ev) = self.events.iter_mut().find(|e| e.id == id) {
-                        ev.title = title;
-                        ev.start = start;
-                        ev.end = end;
-                        ev.all_day = form.all_day;
-                        ev.location = form.location;
-                        ev.description = form.description;
-                        ev.calendar_href = form.calendar_href;
+                        ev.title = title; ev.start = start; ev.end = end;
+                        ev.all_day = form.all_day; ev.location = form.location;
+                        ev.description = form.description; ev.calendar_href = form.calendar_href;
                     }
                     self.save_events();
+                    self.needs_rebuild = true;
                 }
             }
 
             Message::DeleteEvent(id) => {
-                // Delete from CalDAV if synced — find the account that owns this event
-                let mut async_delete = None;
                 if let Some(ev) = self.events.iter().find(|e| e.id == id) {
                     if let Some(ref sync_href) = ev.sync_href {
                         let caldav_url = self.config.calendars.url.clone();
+                        let href = sync_href.clone();
                         if !caldav_url.is_empty() {
-                            let href = sync_href.clone();
-                            async_delete = Some(CosmicTask::perform(
-                                async move {
-                                    let creds =
-                                        crate::sync::keyring::load_credentials(&caldav_url).await;
-                                    if let Ok(Some((username, pw))) = creds {
-                                        if let Ok(client) =
-                                            CalDavClient::new(&caldav_url, &username, &pw)
-                                        {
-                                            let _ = client.delete_vtodo(&href, "").await;
-                                        }
+                            sender.command(move |out, _| async move {
+                                if let Ok(Some((username, pw))) = crate::sync::keyring::load_credentials(&caldav_url).await {
+                                    if let Ok(client) = CalDavClient::new(&caldav_url, &username, &pw) {
+                                        let _ = client.delete_vtodo(&href, "").await;
                                     }
-                                    Ok::<(), String>(())
-                                },
-                                |_| cosmic::Action::App(Message::Save),
-                            ));
+                                }
+                                out.emit(CommandMsg::EventDeleted);
+                            });
                         }
                     }
                 }
                 self.events.retain(|e| e.id != id);
                 self.save_events();
-                if let Some(task) = async_delete {
-                    return task;
-                }
+                self.needs_rebuild = true;
             }
 
-            // Month calendar navigation
-            Message::CalendarPrevMonth => {
-                self.month_calendar.prev_month();
-            }
-
-            Message::CalendarNextMonth => {
-                self.month_calendar.next_month();
-            }
-
-            Message::CalendarSelectDay(date) => {
-                self.month_calendar.select_day(date);
-            }
+            Message::CalendarPrevMonth => { self.month_calendar.prev_month(); self.needs_rebuild = true; }
+            Message::CalendarNextMonth => { self.month_calendar.next_month(); self.needs_rebuild = true; }
+            Message::CalendarSelectDay(date) => { self.month_calendar.select_day(date); self.needs_rebuild = true; }
 
             // Conflict resolution
             Message::ImportConflictTask(idx) => {
                 if idx < self.sync_conflicts.len() {
-                    if let SyncConflict::RemoteOnly { task, .. } =
-                        self.sync_conflicts.remove(idx)
-                    {
+                    if let SyncConflict::RemoteOnly { task, .. } = self.sync_conflicts.remove(idx) {
                         self.inbox_tasks.push(task);
                         self.save_all();
                         self.rebuild_cache();
                     }
                 }
+                self.needs_rebuild = true;
             }
 
             Message::DeleteConflict(idx) => {
                 if idx < self.sync_conflicts.len() {
                     match self.sync_conflicts.remove(idx) {
-                        SyncConflict::RemoteOnly { href, .. } => {
-                            // Queue deletion from server on next sync
-                            self.pending_deletions.push(href);
-                        }
+                        SyncConflict::RemoteOnly { href, .. } => { self.pending_deletions.push(href); self.save_pending_ops(); }
                         SyncConflict::LocalOnly { task_id, .. } => {
-                            // Delete the local task
                             self.remove_task(task_id);
                             self.save_all();
                             self.rebuild_cache();
@@ -2491,19 +2065,13 @@ impl Application for Lamp {
                         SyncConflict::StateMismatch { .. } => {}
                     }
                 }
+                self.needs_rebuild = true;
             }
 
             Message::AcceptRemoteState(idx) => {
                 if idx < self.sync_conflicts.len() {
-                    if let SyncConflict::StateMismatch {
-                        task_id,
-                        remote_state,
-                        ..
-                    } = self.sync_conflicts.remove(idx)
-                    {
-                        if let Some(new_state) =
-                            crate::core::task::TaskState::from_keyword(&remote_state)
-                        {
+                    if let SyncConflict::StateMismatch { task_id, remote_state, .. } = self.sync_conflicts.remove(idx) {
+                        if let Some(new_state) = TaskState::from_keyword(&remote_state) {
                             if let Some(mut task) = self.remove_task(task_id) {
                                 task.state = new_state;
                                 self.route_task_by_state(task);
@@ -2513,274 +2081,374 @@ impl Application for Lamp {
                         }
                     }
                 }
+                self.needs_rebuild = true;
             }
 
             Message::AcceptLocalState(idx) => {
                 if idx < self.sync_conflicts.len() {
-                    if let SyncConflict::StateMismatch {
-                        task_id, href, ..
-                    } = self.sync_conflicts.remove(idx)
-                    {
-                        // Find the local task and queue its current state for push on next sync
+                    if let SyncConflict::StateMismatch { task_id, href, .. } = self.sync_conflicts.remove(idx) {
                         let all = self.all_active_tasks();
                         if let Some(task) = all.iter().find(|t| t.id == task_id) {
-                            let ical =
-                                crate::sync::vtodo::task_to_vcalendar(task);
+                            let ical = crate::sync::vtodo::task_to_vcalendar(task);
                             self.pending_completions.push((href, ical));
+                            self.save_pending_ops();
                         }
                     }
                 }
+                self.needs_rebuild = true;
             }
-
-            _ => {}
         }
-
-        CosmicTask::none()
     }
 
-    fn header_end(&self) -> Vec<Element<'_, Message>> {
-        let mut header_row = row()
-            .spacing(4)
-            .push(
-                button::icon(icon::from_name("list-add-symbolic"))
-                    .on_press(Message::OpenNewTaskForm),
-            );
-
-        // Sync button (only if sync is configured)
-        if self.config.sync_ready() {
-            match self.sync_status {
-                SyncStatus::Syncing => {
-                    const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠇"];
-                    header_row = header_row.push(
-                        text::body(SPINNER[self.sync_anim_frame]),
-                    );
+    fn update_cmd(&mut self, msg: CommandMsg, _sender: ComponentSender<Self>, _root: &Self::Root) {
+        match msg {
+            CommandMsg::SyncCompleted(result) => {
+                match result {
+                    Ok(sync_result) => {
+                        for (href, token) in &sync_result.new_sync_tokens {
+                            self.config.set_sync_token(href, token);
+                        }
+                        let archive_path = self.config.archive_path();
+                        for id in &sync_result.deleted_local {
+                            let task = self.inbox_tasks.iter()
+                                .chain(self.next_tasks.iter()).chain(self.waiting_tasks.iter())
+                                .chain(self.someday_tasks.iter())
+                                .chain(self.projects.iter().flat_map(|p| p.tasks.iter()))
+                                .find(|t| t.id == *id).cloned();
+                            if let Some(task) = task { let _ = OrgWriter::append_to_file(&archive_path, &task); }
+                            self.inbox_tasks.retain(|t| t.id != *id);
+                            self.next_tasks.retain(|t| t.id != *id);
+                            self.waiting_tasks.retain(|t| t.id != *id);
+                            self.someday_tasks.retain(|t| t.id != *id);
+                            for project in &mut self.projects { project.tasks.retain(|t| t.id != *id); }
+                        }
+                        self.rebuild_task_index();
+                        for pulled in &sync_result.pulled {
+                            if let Some(habit) = self.habits.iter_mut().find(|h| h.task.id == pulled.id) {
+                                // Merge remote logbook entries into local completions
+                                for entry in &pulled.logbook_entries {
+                                    if !habit.completions.contains(entry) {
+                                        habit.completions.push(*entry);
+                                    }
+                                }
+                                habit.completions.sort();
+                                habit.task = pulled.clone();
+                                let today = chrono::Local::now().date_naive();
+                                habit.recalculate_streak(today);
+                                continue;
+                            }
+                            if pulled.extra_tags.contains(&"shopping".to_string()) {
+                                if let Some(existing) = self.shopping_tasks.iter_mut().find(|t| t.id == pulled.id) { *existing = pulled.clone(); }
+                                else { self.shopping_tasks.push(pulled.clone()); }
+                                continue;
+                            }
+                            let _existing = self.remove_task(pulled.id);
+                            if let Some(ref project_name) = pulled.project {
+                                let project_name = project_name.clone();
+                                if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) { project.tasks.push(pulled.clone()); continue; }
+                            }
+                            self.route_task_by_state(pulled.clone());
+                        }
+                        self.save_habits(); self.save_shopping();
+                        let habit_ids: HashSet<uuid::Uuid> = self.habits.iter().map(|h| h.task.id).collect();
+                        let shopping_ids: HashSet<uuid::Uuid> = self.shopping_tasks.iter().map(|t| t.id).collect();
+                        let exclude: HashSet<uuid::Uuid> = habit_ids.union(&shopping_ids).copied().collect();
+                        self.inbox_tasks.retain(|t| !exclude.contains(&t.id));
+                        self.next_tasks.retain(|t| !exclude.contains(&t.id));
+                        self.waiting_tasks.retain(|t| !exclude.contains(&t.id));
+                        self.someday_tasks.retain(|t| !exclude.contains(&t.id));
+                        for project in &mut self.projects { project.tasks.retain(|t| !exclude.contains(&t.id)); }
+                        let today = chrono::Local::now().date_naive();
+                        let mut synced_plan_ids: Vec<uuid::Uuid> = Vec::new();
+                        for pulled in &sync_result.pulled { if pulled.dayplan_date == Some(today) { synced_plan_ids.push(pulled.id); } }
+                        if !synced_plan_ids.is_empty() {
+                            let plan = self.ensure_day_plan();
+                            for id in synced_plan_ids { if !plan.confirmed_task_ids.contains(&id) { plan.confirmed_task_ids.push(id); } }
+                            self.save_day_plan();
+                        }
+                        for id in &sync_result.deleted_events { self.events.retain(|e| e.id != *id); }
+                        for pulled_event in &sync_result.pulled_events { self.events.retain(|e| e.id != pulled_event.id); self.events.push(pulled_event.clone()); }
+                        self.save_events(); self.save_all(); self.save_config();
+                        self.pending_completions.clear(); self.pending_deletions.clear();
+                        self.save_pending_ops();
+                        self.sync_conflicts = sync_result.conflicts;
+                    }
+                    Err(e) => {
+                        log::error!("Sync failed: {}", e);
+                        if self.sync_status == SyncStatus::Syncing { self.sync_status = SyncStatus::Error(e); }
+                    }
                 }
-                SyncStatus::Error(_) => {
-                    header_row = header_row.push(
-                        button::icon(icon::from_name("dialog-warning-symbolic"))
-                            .on_press(Message::SyncNow),
-                    );
-                }
-                _ => {
-                    header_row = header_row.push(
-                        button::icon(icon::from_name("emblem-synchronizing-symbolic"))
-                            .on_press(Message::SyncNow),
-                    );
-                }
+                self.finish_sync_op();
+                self.needs_rebuild = true;
             }
+
+            CommandMsg::SyncNotesCompleted(result) => {
+                if let Ok(sync_result) = result {
+                    for pulled in &sync_result.pulled { self.notes.retain(|n| n.id != pulled.id); self.notes.push(pulled.clone()); }
+                    self.notes.sort_by(|a, b| a.title.cmp(&b.title));
+                    self.backlink_index = build_backlink_index(&self.notes);
+                    self.save_all_notes();
+                }
+                self.finish_sync_op();
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::SyncAccountsCompleted(result) => {
+                if let Ok(sync_result) = result { self.accounts = sync_result.items; self.save_accounts(); }
+                self.finish_sync_op();
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::ContactsFetched(result) => {
+                if let Ok(remote) = result {
+                    crate::sync::carddav::merge_contacts(&mut self.contacts, remote);
+                    let _ = crate::sync::carddav::save_contacts(&self.config.contacts_path(), &self.contacts);
+                }
+                self.finish_sync_op();
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::ContactDeleted(result) => {
+                if let Err(e) = result { log::error!("Failed to delete contact from server: {}", e); }
+            }
+
+            CommandMsg::ImapFetched(result) => {
+                if let Ok(emails) = result {
+                    if self.archived_email_uids.is_empty() { self.imap_emails = emails; }
+                    else { self.imap_emails = emails.into_iter().filter(|e| !self.archived_email_uids.contains(&e.uid)).collect(); }
+                }
+                self.finish_sync_op();
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::EmailArchived(result) => {
+                if let Ok(uid) = result { self.imap_emails.retain(|e| e.uid != uid); self.archived_email_uids.insert(uid); }
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::ServiceConnectionTested(kind, ref result, ref cals) => {
+                self.service_test_status[kind as usize] = Some(result.clone());
+                if kind == ServiceKind::Calendars { self.discovered_calendars = cals.clone(); }
+                self.needs_rebuild = true;
+            }
+
+            CommandMsg::EventDeleted => {}
+        }
+    }
+
+    fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
+        // Don't programmatically set toggle buttons — they maintain their own state
+        // and setting them would trigger connect_toggled in a feedback loop.
+
+        // Show/hide sidebar based on mode
+        let hide_sidebar = self.app_mode == AppMode::Do || self.launch_mode == LaunchMode::Today;
+        widgets.split_view.set_collapsed(hide_sidebar);
+        if hide_sidebar {
+            widgets.split_view.set_show_content(true);
         }
 
-        header_row = header_row.push(
-            button::icon(icon::from_name("emblem-system-symbolic"))
-                .on_press(Message::OpenSettings),
+        // Update search visibility
+        let what = match self.active_view {
+            ActiveView::What(w) => w,
+            ActiveView::When(_) => WhatPage::DailyPlanning,
+        };
+        let searchable = matches!(what,
+            WhatPage::Inbox | WhatPage::AllTasks | WhatPage::NextActions | WhatPage::Projects
+            | WhatPage::Waiting | WhatPage::Someday | WhatPage::Habits | WhatPage::Media
+            | WhatPage::Shopping | WhatPage::Contacts | WhatPage::Accounts | WhatPage::Notes
         );
+        widgets.search_entry.set_visible(searchable && self.app_mode == AppMode::Plan);
 
-        vec![header_row.into()]
-    }
-
-    fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Message>> {
-        let drawer_state = self.context_drawer_state?;
-
-        match drawer_state {
-            ContextDrawerState::NewTask => {
-                Some(context_drawer::context_drawer(
-                    container(scrollable(self.capture_form_view().padding(16)))
-                        .width(Length::Fill),
-                    Message::CloseNewTaskForm,
-                ).title("New Task"))
-            }
-        }
-    }
-
-    fn on_escape(&mut self) -> CosmicTask<Message> {
-        if self.context_drawer_state == Some(ContextDrawerState::NewTask) {
-            self.context_drawer_state = None;
-            self.core.window.show_context = false;
-            if self.launch_mode == LaunchMode::Capture {
-                std::process::exit(0);
-            }
-        }
-        CosmicTask::none()
-    }
-
-    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
-        let keyboard = cosmic::iced::event::listen_with(|event, _status, _id| {
-            match event {
-                cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                    key: cosmic::iced::keyboard::Key::Character(ref c),
-                    modifiers,
-                    ..
-                }) if c.as_str() == "n" && modifiers.control() => {
-                    Some(Message::OpenNewTaskForm)
+        // Sync button feedback — spinner while syncing, icon when idle
+        match &self.sync_status {
+            SyncStatus::Syncing => {
+                widgets.sync_button.set_icon_name("process-working-symbolic");
+                widgets.sync_button.set_sensitive(false);
+                // Show "syncing" toast once
+                if widgets.last_sync_toast.as_deref() != Some("syncing") {
+                    let toast = adw::Toast::new("Syncing…");
+                    toast.set_timeout(1);
+                    widgets.toast_overlay.add_toast(toast);
+                    widgets.last_sync_toast = Some("syncing".to_string());
                 }
-                _ => None,
             }
-        });
+            SyncStatus::LastSynced(t) => {
+                widgets.sync_button.set_icon_name("emblem-synchronizing-symbolic");
+                widgets.sync_button.set_sensitive(true);
+                let key = format!("done:{}", t);
+                if widgets.last_sync_toast.as_deref() != Some(&key) {
+                    let toast = adw::Toast::new(&format!("Synced at {}", t));
+                    toast.set_timeout(2);
+                    widgets.toast_overlay.add_toast(toast);
+                    widgets.last_sync_toast = Some(key);
+                }
+            }
+            SyncStatus::Error(e) => {
+                widgets.sync_button.set_icon_name("dialog-warning-symbolic");
+                widgets.sync_button.set_sensitive(true);
+                let key = format!("err:{}", e);
+                if widgets.last_sync_toast.as_deref() != Some(&key) {
+                    let toast = adw::Toast::new(&format!("Sync error: {}", e));
+                    toast.set_timeout(5);
+                    widgets.toast_overlay.add_toast(toast);
+                    widgets.last_sync_toast = Some(key);
+                }
+            }
+            SyncStatus::Idle => {
+                widgets.sync_button.set_icon_name("emblem-synchronizing-symbolic");
+                widgets.sync_button.set_sensitive(true);
+            }
+        }
 
-        let syncing = self.sync_status == SyncStatus::Syncing;
-        let has_timer = self.active_timer.is_some();
+        // Manage timer
+        if self.active_timer.is_some() && widgets.timer_source.is_none() {
+            let s = sender.input_sender().clone();
+            widgets.timer_source = Some(gtk::glib::timeout_add_seconds_local(1, move || {
+                s.emit(Message::TimerTick);
+                gtk::glib::ControlFlow::Continue
+            }));
+        } else if self.active_timer.is_none() {
+            if let Some(source) = widgets.timer_source.take() {
+                source.remove();
+            }
+        }
 
-        if has_timer || syncing {
-            let mut subs = vec![keyboard];
-            if has_timer {
-                subs.push(
-                    cosmic::iced::time::every(std::time::Duration::from_secs(1))
-                        .map(|_| Message::TimerTick),
-                );
+        // Manage sync animation
+        if self.sync_status == SyncStatus::Syncing && widgets.sync_anim_source.is_none() {
+            let s = sender.input_sender().clone();
+            widgets.sync_anim_source = Some(gtk::glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                s.emit(Message::SyncAnimTick);
+                gtk::glib::ControlFlow::Continue
+            }));
+        } else if self.sync_status != SyncStatus::Syncing {
+            if let Some(source) = widgets.sync_anim_source.take() {
+                source.remove();
             }
-            if syncing {
-                subs.push(
-                    cosmic::iced::time::every(std::time::Duration::from_millis(150))
-                        .map(|_| Message::SyncAnimTick),
-                );
-            }
-            cosmic::iced::Subscription::batch(subs)
+        }
+
+        if !self.needs_rebuild {
+            return;
+        }
+
+        // Rebuild page content
+        let s = sender.input_sender();
+        ui::clear_box(&widgets.page_content);
+
+        if self.app_mode == AppMode::Do {
+            let page = pages::do_mode::do_mode_view(
+                &self.day_plan, &self.all_tasks_cache, &self.habits,
+                &self.media_items, &self.shopping_tasks,
+                self.expanded_task, &self.note_inputs, self.active_timer, s,
+            );
+            widgets.page_content.append(&page);
+            return;
+        }
+
+        let project_names: Vec<String> = self.projects.iter().map(|p| p.name.clone()).collect();
+        let row_ctx = crate::components::task_row::TaskRowCtx {
+            contexts: self.config.contexts.clone(),
+            project_names: project_names.clone(),
+            expanded_task: self.expanded_task,
+            note_inputs: self.note_inputs.clone(),
+            waiting_for_inputs: self.waiting_for_inputs.clone(),
+            contacts: self.contacts.clone(),
+        };
+
+        // Apply search filter
+        let q = &self.search_query;
+        let filtered_tasks: Vec<Task>;
+        let tasks: &[Task] = if !q.is_empty() && searchable {
+            let lq = q.to_lowercase();
+            filtered_tasks = self.all_tasks_cache.iter()
+                .filter(|t| t.title.to_lowercase().contains(&lq)).cloned().collect();
+            &filtered_tasks
         } else {
-            keyboard
-        }
-    }
+            &self.all_tasks_cache
+        };
 
-    fn view(&self) -> Element<'_, Message> {
-        match self.app_mode {
-            AppMode::Plan => self.plan_view(),
-            AppMode::Do => self.do_view(),
-        }
+        let page: gtk::Widget = match what {
+            WhatPage::DailyPlanning => {
+                let mut plan_tasks = self.all_tasks_cache.clone();
+                plan_tasks.extend(self.habits.iter().map(|h| h.task.clone()));
+                pages::daily_planning::daily_planning_view(
+                    &self.day_plan, &plan_tasks, &self.media_items, &self.shopping_tasks,
+                    &self.config.contexts, &self.rejected_suggestions, s,
+                )
+            }
+            WhatPage::Inbox => pages::inbox::inbox_view(tasks, &self.imap_emails, &self.inbox_input, &row_ctx, s),
+            WhatPage::AllTasks => pages::all_tasks::all_tasks_view(tasks, &row_ctx, self.all_tasks_sort, s),
+            WhatPage::NextActions => pages::next_actions::next_actions_view(tasks, &row_ctx, s),
+            WhatPage::Projects => {
+                let filtered_projects: Vec<Project>;
+                let projects = if !q.is_empty() {
+                    let lq = q.to_lowercase();
+                    filtered_projects = self.projects.iter()
+                        .filter(|p| p.name.to_lowercase().contains(&lq) || p.tasks.iter().any(|t| t.title.to_lowercase().contains(&lq)))
+                        .cloned().collect();
+                    &filtered_projects
+                } else {
+                    &self.projects
+                };
+                pages::projects::projects_view(projects, &self.project_input, &self.project_task_inputs, &row_ctx, s)
+            }
+            WhatPage::Waiting => pages::waiting::waiting_view(tasks, &row_ctx, s),
+            WhatPage::Someday => pages::someday::someday_view(tasks, &row_ctx, s),
+            WhatPage::Habits => {
+                let filtered_habits: Vec<Habit>;
+                let habits = if !q.is_empty() {
+                    let lq = q.to_lowercase();
+                    filtered_habits = self.habits.iter().filter(|h| h.task.title.to_lowercase().contains(&lq)).cloned().collect();
+                    &filtered_habits
+                } else { &self.habits };
+                pages::habits::habits_view(habits, &self.habit_input, s)
+            }
+            WhatPage::Conflicts => pages::conflicts::conflicts_view(&self.sync_conflicts, s),
+            WhatPage::Review => pages::review::review_view(&self.all_tasks_cache, &self.projects, &self.habits, &self.review_checked, s),
+            WhatPage::Tickler => {
+                let flat_cals = self.all_discovered_calendars();
+                pages::temporal::agenda_view(
+                    &self.all_tasks_cache, &self.habits, &self.events,
+                    self.event_form.as_ref(), &row_ctx, &flat_cals, &self.month_calendar, s,
+                )
+            }
+            WhatPage::Media => pages::list::list_view(
+                &self.media_items, &self.media_input, crate::fl!("media-placeholder"),
+                crate::fl!("media-empty"), ListKind::Media,
+                &self.flipped_list_items, self.pending_delete_list_item, &self.note_inputs, s,
+            ),
+            WhatPage::Shopping => pages::list::shopping_view(
+                &self.shopping_tasks, &self.shopping_input,
+                &self.flipped_list_items, self.pending_delete_list_item, &self.note_inputs, s,
+            ),
+            WhatPage::Contacts => pages::contacts::contacts_view(
+                &self.contacts, &self.contact_input, &self.flipped_contacts,
+                self.editing_contact, self.pending_delete_contact, s,
+            ),
+            WhatPage::Accounts => pages::accounts::accounts_view(
+                &self.accounts, &self.account_input, self.expanded_account,
+                self.pending_delete_account, s,
+            ),
+            WhatPage::Notes => pages::notes::notes_view(
+                &self.notes, &self.note_input, &self.flipped_notes,
+                self.editing_note, self.pending_delete_note,
+                &self.note_body_buffer, &self.note_edit_buffer,
+                &self.note_link_search, &self.backlink_index,
+                &self.contacts, &self.accounts, &self.projects,
+                &self.all_tasks_cache, &self.media_items, &self.shopping_tasks, s,
+            ),
+            WhatPage::Archive => pages::archive::archive_view(&self.archive_tasks, &self.archive_search, s),
+            WhatPage::Settings => pages::settings::settings_view(
+                &self.config, &self.settings_context_input, &self.service_passwords,
+                &self.service_test_status, &self.discovered_calendars, &self.sync_status, s,
+            ),
+        };
+
+        widgets.page_content.append(&page);
     }
 }
 
+// --- Impl block for data methods (unchanged from original) ---
 impl Lamp {
-    fn capture_form_view(&self) -> column::Column<'_, Message> {
-        let form = &self.new_task_form;
-        let mut content = column().spacing(16);
-
-        // Title
-        content = content.push(text::title4("Title"));
-        content = content.push(
-            text_input::text_input("Task title...", &form.title)
-                .on_input(Message::CaptureFormTitle)
-                .on_submit(|_| Message::CaptureFormSubmit)
-                .width(Length::Fill),
-        );
-
-        // State
-        content = content.push(text::title4("State"));
-        let state_row = row()
-            .spacing(4)
-            .push(state_button("Todo", TaskState::Todo, &form.state))
-            .push(state_button("Next", TaskState::Next, &form.state))
-            .push(state_button("Waiting", TaskState::Waiting, &form.state))
-            .push(state_button("Someday", TaskState::Someday, &form.state));
-        content = content.push(state_row);
-
-        // Priority
-        content = content.push(text::title4("Priority"));
-        let priority_row = row()
-            .spacing(4)
-            .push(priority_button("-", None, &form.priority))
-            .push(priority_button("A", Some(Priority::A), &form.priority))
-            .push(priority_button("B", Some(Priority::B), &form.priority))
-            .push(priority_button("C", Some(Priority::C), &form.priority));
-        content = content.push(priority_row);
-
-        // ESC (energy/spoon cost)
-        content = content.push(text::title4("Energy Cost"));
-        let mut esc_items: Vec<Element<'_, Message>> = vec![esc_button("-", None, &form.esc)];
-        for val in [5, 10, 15, 20, 25, 30, 40, 50, 75, 100] {
-            esc_items.push(esc_button(&val.to_string(), Some(val), &form.esc));
-        }
-        content = content.push(flex_row(esc_items).row_spacing(4).column_spacing(4));
-
-        // Contexts
-        if !self.config.contexts.is_empty() {
-            content = content.push(text::title4("Contexts"));
-            let mut ctx_items: Vec<Element<'_, Message>> = Vec::new();
-            for ctx in &self.config.contexts {
-                let active = form.contexts.contains(ctx);
-                let btn: Element<'_, Message> = if active {
-                    button::suggested(ctx.as_str())
-                        .on_press(Message::CaptureFormToggleContext(ctx.clone()))
-                        .into()
-                } else {
-                    button::standard(ctx.as_str())
-                        .on_press(Message::CaptureFormToggleContext(ctx.clone()))
-                        .into()
-                };
-                ctx_items.push(btn);
-            }
-            content = content.push(flex_row(ctx_items).row_spacing(4).column_spacing(4));
-        }
-
-        // Project
-        let project_names: Vec<String> = self.projects.iter().map(|p| p.name.clone()).collect();
-        if !project_names.is_empty() {
-            content = content.push(text::title4("Project"));
-            let mut proj_items: Vec<Element<'_, Message>> = Vec::new();
-            let none_btn: Element<'_, Message> = if form.project.is_none() {
-                button::suggested("None")
-                    .on_press(Message::CaptureFormProject(None))
-                    .into()
-            } else {
-                button::standard("None")
-                    .on_press(Message::CaptureFormProject(None))
-                    .into()
-            };
-            proj_items.push(none_btn);
-            for name in &project_names {
-                let active = form.project.as_ref() == Some(name);
-                let btn: Element<'_, Message> = if active {
-                    button::suggested(name.clone())
-                        .on_press(Message::CaptureFormProject(Some(name.clone())))
-                        .into()
-                } else {
-                    button::standard(name.clone())
-                        .on_press(Message::CaptureFormProject(Some(name.clone())))
-                        .into()
-                };
-                proj_items.push(btn);
-            }
-            content = content.push(flex_row(proj_items).row_spacing(4).column_spacing(4));
-        }
-
-        // Scheduled
-        content = content.push(text::title4("Scheduled"));
-        content = content.push(
-            text_input::text_input(crate::fl!("event-date-placeholder"), &form.scheduled)
-                .on_input(Message::CaptureFormScheduled)
-                .width(Length::Fill),
-        );
-        if let Some(ref err) = form.scheduled_error {
-            content = content.push(text::caption(err.clone()).size(11.0));
-        }
-
-        // Deadline
-        content = content.push(text::title4("Deadline"));
-        content = content.push(
-            text_input::text_input(crate::fl!("event-date-placeholder"), &form.deadline)
-                .on_input(Message::CaptureFormDeadline)
-                .width(Length::Fill),
-        );
-        if let Some(ref err) = form.deadline_error {
-            content = content.push(text::caption(err.clone()).size(11.0));
-        }
-
-        // Notes
-        content = content.push(text::title4("Notes"));
-        content = content.push(
-            text_input::text_input("Notes...", &form.notes)
-                .on_input(Message::CaptureFormNotes)
-                .width(Length::Fill),
-        );
-
-        // Submit button
-        content = content.push(
-            button::suggested("Create Task")
-                .on_press(Message::CaptureFormSubmit)
-                .width(Length::Fill),
-        );
-
-        content
-    }
-
     fn route_task_by_state(&mut self, task: Task) {
         match task.state {
             TaskState::Todo => self.inbox_tasks.push(task),
@@ -2791,387 +2459,25 @@ impl Lamp {
         }
     }
 
-    fn plan_view(&self) -> Element<'_, Message> {
-        let project_names: Vec<String> = self.projects.iter().map(|p| p.name.clone()).collect();
-        let row_ctx = crate::components::task_row::TaskRowCtx {
-            contexts: &self.config.contexts,
-            project_names: &project_names,
-            expanded_task: self.expanded_task,
-            note_inputs: &self.note_inputs,
-            waiting_for_inputs: &self.waiting_for_inputs,
-            contacts: &self.contacts,
-        };
-
-        let what = match self.active_view {
-            ActiveView::What(w) => w,
-            ActiveView::When(_) => WhatPage::DailyPlanning,
-        };
-
-        let searchable = matches!(
-            what,
-            WhatPage::Inbox
-                | WhatPage::AllTasks
-                | WhatPage::NextActions
-                | WhatPage::Projects
-                | WhatPage::Waiting
-                | WhatPage::Someday
-                | WhatPage::Habits
-                | WhatPage::Media
-                | WhatPage::Shopping
-                | WhatPage::Contacts
-                | WhatPage::Accounts
-                | WhatPage::Notes
-        );
-
-        // Pre-filter data when search is active
-        let q = &self.search_query;
-        let filtered_tasks: Vec<Task>;
-        let tasks: &[Task] = if !q.is_empty() && searchable {
-            let lq = q.to_lowercase();
-            filtered_tasks = self
-                .all_tasks_cache
-                .iter()
-                .filter(|t| t.title.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_tasks
-        } else {
-            &self.all_tasks_cache
-        };
-
-        let filtered_projects: Vec<Project>;
-        let projects: &[Project] = if !q.is_empty() && what == WhatPage::Projects {
-            let lq = q.to_lowercase();
-            filtered_projects = self
-                .projects
-                .iter()
-                .filter(|p| {
-                    p.name.to_lowercase().contains(&lq)
-                        || p.tasks.iter().any(|t| t.title.to_lowercase().contains(&lq))
-                })
-                .cloned()
-                .collect();
-            &filtered_projects
-        } else {
-            &self.projects
-        };
-
-        let filtered_habits: Vec<Habit>;
-        let habits: &[Habit] = if !q.is_empty() && what == WhatPage::Habits {
-            let lq = q.to_lowercase();
-            filtered_habits = self
-                .habits
-                .iter()
-                .filter(|h| h.task.title.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_habits
-        } else {
-            &self.habits
-        };
-
-        let filtered_media: Vec<ListItem>;
-        let media: &[ListItem] = if !q.is_empty() && what == WhatPage::Media {
-            let lq = q.to_lowercase();
-            filtered_media = self
-                .media_items
-                .iter()
-                .filter(|i| i.title.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_media
-        } else {
-            &self.media_items
-        };
-
-        let filtered_shopping: Vec<ListItem>;
-        let shopping: &[ListItem] = if !q.is_empty() && what == WhatPage::Shopping {
-            let lq = q.to_lowercase();
-            filtered_shopping = self
-                .shopping_items
-                .iter()
-                .filter(|i| i.title.to_lowercase().contains(&lq))
-                .cloned()
-                .collect();
-            &filtered_shopping
-        } else {
-            &self.shopping_items
-        };
-
-        // Contacts: always pass (original_index, &Contact) tuples to preserve correct indices
-        let contacts_indexed: Vec<(usize, &Contact)> = if !q.is_empty() && what == WhatPage::Contacts {
-            let lq = q.to_lowercase();
-            self.contacts
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.name.to_lowercase().contains(&lq))
-                .collect()
-        } else {
-            self.contacts.iter().enumerate().collect()
-        };
-
-        // Accounts: always pass (original_index, &Account) tuples to preserve correct indices
-        let accounts_indexed: Vec<(usize, &Account)> = if !q.is_empty() && what == WhatPage::Accounts {
-            let lq = q.to_lowercase();
-            self.accounts
-                .iter()
-                .enumerate()
-                .filter(|(_, a)| a.name.to_lowercase().contains(&lq))
-                .collect()
-        } else {
-            self.accounts.iter().enumerate().collect()
-        };
-
-        let filtered_notes: Vec<Note>;
-        let notes_filtered: &[Note] = if !q.is_empty() && what == WhatPage::Notes {
-            let lq = q.to_lowercase();
-            filtered_notes = self
-                .notes
-                .iter()
-                .filter(|n| {
-                    n.title.to_lowercase().contains(&lq)
-                        || n.body.to_lowercase().contains(&lq)
-                        || n.tags.iter().any(|t| t.to_lowercase().contains(&lq))
-                })
-                .cloned()
-                .collect();
-            &filtered_notes
-        } else {
-            &self.notes
-        };
-
-        let content: Element<'_, Message> = match what {
-                WhatPage::DailyPlanning => {
-                    // Include habit tasks alongside regular tasks for planning
-                    let mut plan_tasks = self.all_tasks_cache.clone();
-                    plan_tasks.extend(self.habits.iter().map(|h| h.task.clone()));
-                    pages::daily_planning::daily_planning_view(
-                        &self.day_plan,
-                        &plan_tasks,
-                        &self.media_items,
-                        &self.shopping_items,
-                        &self.config.contexts,
-                        &self.rejected_suggestions,
-                    )
-                }
-                WhatPage::Inbox => {
-                    pages::inbox::inbox_view(
-                        tasks,
-                        &self.imap_emails,
-                        &self.inbox_input,
-                        &row_ctx,
-                    )
-                }
-                WhatPage::AllTasks => {
-                    pages::all_tasks::all_tasks_view(
-                        tasks,
-                        &row_ctx,
-                        self.all_tasks_sort,
-                    )
-                }
-                WhatPage::NextActions => {
-                    pages::next_actions::next_actions_view(
-                        tasks,
-                        &row_ctx,
-                    )
-                }
-                WhatPage::Projects => {
-                    pages::projects::projects_view(
-                        projects,
-                        &self.project_input,
-                        &self.project_task_inputs,
-                        &row_ctx,
-                    )
-                }
-                WhatPage::Waiting => {
-                    pages::waiting::waiting_view(
-                        tasks,
-                        &row_ctx,
-                    )
-                }
-                WhatPage::Someday => {
-                    pages::someday::someday_view(
-                        tasks,
-                        &row_ctx,
-                    )
-                }
-                WhatPage::Habits => {
-                    pages::habits::habits_view(habits, &self.habit_input)
-                }
-                WhatPage::Conflicts => {
-                    pages::conflicts::conflicts_view(&self.sync_conflicts)
-                }
-                WhatPage::Review => {
-                    pages::review::review_view(
-                        &self.all_tasks_cache,
-                        &self.projects,
-                        &self.habits,
-                        &self.review_checked,
-                    )
-                }
-                WhatPage::Tickler => {
-                    let flat_cals = self.all_discovered_calendars();
-                    pages::temporal::agenda_view(
-                        &self.all_tasks_cache,
-                        &self.habits,
-                        &self.events,
-                        self.event_form.as_ref(),
-                        &row_ctx,
-                        &flat_cals,
-                        &self.month_calendar,
-                    )
-                }
-                WhatPage::Media => {
-                    pages::list::list_view(
-                        media,
-                        &self.media_input,
-                        crate::fl!("media-placeholder"),
-                        crate::fl!("media-empty"),
-                        ListKind::Media,
-                        &self.flipped_list_items,
-                        self.pending_delete_list_item,
-                        &self.note_inputs,
-                    )
-                }
-                WhatPage::Shopping => {
-                    pages::list::list_view(
-                        shopping,
-                        &self.shopping_input,
-                        crate::fl!("shopping-placeholder"),
-                        crate::fl!("shopping-empty"),
-                        ListKind::Shopping,
-                        &self.flipped_list_items,
-                        self.pending_delete_list_item,
-                        &self.note_inputs,
-                    )
-                }
-                WhatPage::Contacts => {
-                    pages::contacts::contacts_view(
-                        &contacts_indexed,
-                        &self.contact_input,
-                        &self.flipped_contacts,
-                        self.editing_contact,
-                        self.pending_delete_contact,
-                    )
-                }
-                WhatPage::Accounts => {
-                    pages::accounts::accounts_view(
-                        &accounts_indexed,
-                        &self.account_input,
-                        self.expanded_account,
-                        self.pending_delete_account,
-                    )
-                }
-                WhatPage::Notes => {
-                    pages::notes::notes_view(
-                        notes_filtered,
-                        &self.notes,
-                        &self.note_input,
-                        &self.flipped_notes,
-                        self.editing_note,
-                        self.pending_delete_note,
-                        &self.note_editor_content,
-                        &self.note_edit_buffer,
-                        &self.note_link_search,
-
-                        &self.backlink_index,
-                        &self.contacts,
-                        &self.accounts,
-                        &self.projects,
-                        &self.all_tasks_cache,
-                        &self.media_items,
-                        &self.shopping_items,
-                    )
-                }
-                WhatPage::Archive => {
-                    pages::archive::archive_view(
-                        &self.archive_tasks,
-                        &self.archive_search,
-                    )
-                }
-                WhatPage::Settings => {
-                    pages::settings::settings_view(
-                        &self.config,
-                        &self.settings_context_input,
-                        &self.service_passwords,
-                        &self.service_test_status,
-                        &self.discovered_calendars,
-                        &self.sync_status,
-                    )
-                }
-        };
-
-        if searchable {
-            let search_input = text_input::text_input(
-                crate::fl!("search-placeholder"),
-                self.search_query.clone(),
-            )
-            .on_input(Message::SearchQueryChanged)
-            .width(Length::Fill);
-
-            container(
-                column()
-                    .spacing(8)
-                    .push(container(search_input).padding([0, 16]))
-                    .push(content),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-        } else {
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        }
-    }
-
-    fn do_view(&self) -> Element<'_, Message> {
-        pages::do_mode::do_mode_view(
-            &self.day_plan,
-            &self.all_tasks_cache,
-            &self.habits,
-            &self.media_items,
-            &self.shopping_items,
-            self.expanded_task,
-            &self.note_inputs,
-            self.active_timer,
-        )
-    }
-
     fn rebuild_cache(&mut self) {
-        // Cache excludes habits — they have their own page and do_mode section.
-        // all_active_tasks() still includes them for sync purposes.
         let mut tasks = Vec::new();
         tasks.extend(self.inbox_tasks.iter().cloned());
         tasks.extend(self.next_tasks.iter().cloned());
         tasks.extend(self.waiting_tasks.iter().cloned());
         tasks.extend(self.someday_tasks.iter().cloned());
-        for project in &self.projects {
-            tasks.extend(project.tasks.iter().cloned());
-        }
+        for project in &self.projects { tasks.extend(project.tasks.iter().cloned()); }
         self.all_tasks_cache = tasks;
         self.rebuild_task_index();
     }
 
     fn rebuild_task_index(&mut self) {
         self.task_index.clear();
-        for task in &self.inbox_tasks {
-            self.task_index.insert(task.id, TaskLocation::Inbox);
-        }
-        for task in &self.next_tasks {
-            self.task_index.insert(task.id, TaskLocation::Next);
-        }
-        for task in &self.waiting_tasks {
-            self.task_index.insert(task.id, TaskLocation::Waiting);
-        }
-        for task in &self.someday_tasks {
-            self.task_index.insert(task.id, TaskLocation::Someday);
-        }
+        for task in &self.inbox_tasks { self.task_index.insert(task.id, TaskLocation::Inbox); }
+        for task in &self.next_tasks { self.task_index.insert(task.id, TaskLocation::Next); }
+        for task in &self.waiting_tasks { self.task_index.insert(task.id, TaskLocation::Waiting); }
+        for task in &self.someday_tasks { self.task_index.insert(task.id, TaskLocation::Someday); }
         for project in &self.projects {
-            for task in &project.tasks {
-                self.task_index.insert(task.id, TaskLocation::Project(project.name.clone()));
-            }
+            for task in &project.tasks { self.task_index.insert(task.id, TaskLocation::Project(project.name.clone())); }
         }
     }
 
@@ -3181,38 +2487,34 @@ impl Lamp {
         tasks.extend(self.next_tasks.iter().cloned());
         tasks.extend(self.waiting_tasks.iter().cloned());
         tasks.extend(self.someday_tasks.iter().cloned());
-        for project in &self.projects {
-            tasks.extend(project.tasks.iter().cloned());
-        }
-        tasks.extend(self.habits.iter().map(|h| h.task.clone()));
+        for project in &self.projects { tasks.extend(project.tasks.iter().cloned()); }
+        tasks.extend(self.habits.iter().map(|h| {
+            let mut task = h.task.clone();
+            // Stamp completions into logbook_entries so they sync to CalDAV
+            task.logbook_entries = h.completions.clone();
+            task
+        }));
+        tasks.extend(self.shopping_tasks.iter().cloned());
         tasks
     }
 
     fn toggle_done(&mut self, id: uuid::Uuid) {
-        // Find the task, complete it, archive it, and remove from source
         if let Some(mut task) = self.remove_task(id) {
             if task.state.is_done() {
-                // Un-completing: put back as Todo
-                task.state = crate::core::task::TaskState::Todo;
+                task.state = TaskState::Todo;
                 task.completed = None;
                 self.route_task_by_state(task);
             } else {
-                // Completing: mark done and archive
                 task.complete();
-
-                // Queue CalDAV completion push for next sync
                 if let Some(ref sync_href) = task.sync_href {
                     let ical = crate::sync::vtodo::task_to_vcalendar(&task);
-                    log::info!("Queuing completion for sync: {}", sync_href);
                     self.pending_completions.push((sync_href.clone(), ical));
+                    self.save_pending_ops();
                 }
-
                 let archive_path = self.config.archive_path();
                 if OrgWriter::append_to_file(&archive_path, &task).is_err() {
-                    log::error!("Failed to archive task, keeping in source list");
                     self.route_task_by_state(task);
                 }
-
                 self.save_all();
                 return;
             }
@@ -3220,59 +2522,29 @@ impl Lamp {
         }
     }
 
-    fn set_task_state(&mut self, id: uuid::Uuid, state: crate::core::task::TaskState) {
-        use crate::core::task::TaskState;
-
+    fn set_task_state(&mut self, id: uuid::Uuid, state: TaskState) {
         if let Some(mut task) = self.remove_task(id) {
             let old_state = task.state.clone();
             task.state = state.clone();
-
-            // Set completed timestamp when marking done/cancelled
-            if state.is_done() && !old_state.is_done() {
-                task.completed = Some(chrono::Local::now().naive_local());
-            }
-            // Clear completed timestamp when un-completing
-            if !state.is_done() && old_state.is_done() {
-                task.completed = None;
-            }
-
-            // Auto-stamp delegated date when entering Waiting state
+            if state.is_done() && !old_state.is_done() { task.completed = Some(chrono::Local::now().naive_local()); }
+            if !state.is_done() && old_state.is_done() { task.completed = None; }
             if state == TaskState::Waiting && old_state != TaskState::Waiting {
-                if task.delegated.is_none() {
-                    task.delegated = Some(chrono::Local::now().date_naive());
-                }
+                if task.delegated.is_none() { task.delegated = Some(chrono::Local::now().date_naive()); }
             }
-            // Clear delegated/follow_up when leaving Waiting state
-            if state != TaskState::Waiting && old_state == TaskState::Waiting {
-                task.delegated = None;
-                task.follow_up = None;
-            }
-
-            // If task belongs to a project, put it back there with the new state
+            if state != TaskState::Waiting && old_state == TaskState::Waiting { task.delegated = None; task.follow_up = None; }
             if let Some(ref project_name) = task.project {
                 let project_name = project_name.clone();
                 if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
                     project.tasks.push(task);
-                } else {
-                    // Project not found — route by state as fallback to avoid losing the task
-                    log::warn!("Project '{}' not found, routing task by state", project_name);
-                    task.project = None;
-                    self.route_task_by_state(task);
-                }
+                } else { task.project = None; self.route_task_by_state(task); }
             } else {
-                match state {
-                    TaskState::Todo => self.inbox_tasks.push(task),
-                    TaskState::Next => self.next_tasks.push(task),
-                    TaskState::Waiting => self.waiting_tasks.push(task),
-                    TaskState::Someday => self.someday_tasks.push(task),
-                    _ => self.inbox_tasks.push(task),
-                }
+                self.route_task_by_state(task);
             }
             self.save_all();
         }
     }
 
-    fn set_task_priority(&mut self, id: uuid::Uuid, priority: Option<crate::core::task::Priority>) {
+    fn set_task_priority(&mut self, id: uuid::Uuid, priority: Option<Priority>) {
         let list = match self.task_index.get(&id) {
             Some(TaskLocation::Inbox) => Some(&mut self.inbox_tasks as &mut Vec<Task>),
             Some(TaskLocation::Next) => Some(&mut self.next_tasks),
@@ -3280,21 +2552,15 @@ impl Lamp {
             Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
             Some(TaskLocation::Project(name)) => {
                 let name = name.clone();
-                self.projects.iter_mut()
-                    .find(|p| p.name == name)
-                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+                self.projects.iter_mut().find(|p| p.name == name).map(|p| &mut p.tasks as &mut Vec<Task>)
             }
             None => None,
         };
         if let Some(list) = list {
-            if let Some(task) = list.iter_mut().find(|t| t.id == id) {
-                task.priority = priority;
-                self.save_all();
-            }
+            if let Some(task) = list.iter_mut().find(|t| t.id == id) { task.priority = priority; self.save_all(); }
         }
     }
 
-    /// Find a task across all lists, apply a mutation, and save.
     fn modify_task(&mut self, id: uuid::Uuid, f: impl FnOnce(&mut Task)) {
         let list = match self.task_index.get(&id) {
             Some(TaskLocation::Inbox) => Some(&mut self.inbox_tasks as &mut Vec<Task>),
@@ -3303,17 +2569,12 @@ impl Lamp {
             Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
             Some(TaskLocation::Project(name)) => {
                 let name = name.clone();
-                self.projects.iter_mut()
-                    .find(|p| p.name == name)
-                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+                self.projects.iter_mut().find(|p| p.name == name).map(|p| &mut p.tasks as &mut Vec<Task>)
             }
             None => None,
         };
         if let Some(list) = list {
-            if let Some(task) = list.iter_mut().find(|t| t.id == id) {
-                f(task);
-                self.save_all();
-            }
+            if let Some(task) = list.iter_mut().find(|t| t.id == id) { f(task); self.save_all(); }
         }
     }
 
@@ -3325,30 +2586,20 @@ impl Lamp {
             Some(TaskLocation::Someday) => Some(&mut self.someday_tasks),
             Some(TaskLocation::Project(name)) => {
                 let name = name.clone();
-                self.projects.iter_mut()
-                    .find(|p| p.name == name)
-                    .map(|p| &mut p.tasks as &mut Vec<Task>)
+                self.projects.iter_mut().find(|p| p.name == name).map(|p| &mut p.tasks as &mut Vec<Task>)
             }
             None => return None,
         };
-        if let Some(list) = list {
-            if let Some(pos) = list.iter().position(|t| t.id == id) {
-                return Some(list.remove(pos));
-            }
-        }
-        None
+        list.and_then(|list| {
+            list.iter().position(|t| t.id == id).map(|pos| list.remove(pos))
+        })
     }
 
     fn ensure_day_plan(&mut self) -> &mut DayPlan {
         let today = chrono::Local::now().date_naive();
         if self.day_plan.as_ref().is_none_or(|dp| dp.is_stale(today)) {
             let mut plan = DayPlan::new(today);
-            // Auto-confirm all due habits into the new day plan
-            for habit in &self.habits {
-                if habit.is_due(today) {
-                    plan.confirmed_task_ids.push(habit.task.id);
-                }
-            }
+            for habit in &self.habits { if habit.is_due(today) { plan.confirmed_task_ids.push(habit.task.id); } }
             self.day_plan = Some(plan);
             self.rejected_suggestions.clear();
         }
@@ -3358,17 +2609,44 @@ impl Lamp {
     fn save_day_plan(&self) {
         if let Some(ref plan) = self.day_plan {
             let content = OrgWriter::write_day_plan(plan);
-            if let Err(e) = std::fs::write(self.config.dayplan_path(), &content) {
-                log::error!("Failed to save day plan: {}", e);
+            let _ = std::fs::write(self.config.dayplan_path(), &content);
+        }
+    }
+
+    fn save_pending_ops(&self) {
+        let path = self.config.org_directory.join(".pending_ops.json");
+        let data = serde_json::json!({
+            "completions": self.pending_completions,
+            "deletions": self.pending_deletions,
+        });
+        let _ = std::fs::write(&path, serde_json::to_string(&data).unwrap_or_default());
+    }
+
+    fn load_pending_ops(config: &LampConfig) -> (Vec<(String, String)>, Vec<String>) {
+        let path = config.org_directory.join(".pending_ops.json");
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let completions = data["completions"].as_array()
+                        .map(|arr| arr.iter().filter_map(|v| {
+                            let arr = v.as_array()?;
+                            Some((arr[0].as_str()?.to_string(), arr[1].as_str()?.to_string()))
+                        }).collect())
+                        .unwrap_or_default();
+                    let deletions = data["deletions"].as_array()
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    return (completions, deletions);
+                }
+                (Vec::new(), Vec::new())
             }
+            Err(_) => (Vec::new(), Vec::new()),
         }
     }
 
     fn save_inbox(&mut self) {
         let content = OrgWriter::write_file("Inbox", &self.inbox_tasks);
-        if let Err(e) = std::fs::write(self.config.inbox_path(), &content) {
-            log::error!("Failed to save inbox: {}", e);
-        }
+        let _ = std::fs::write(self.config.inbox_path(), &content);
         self.rebuild_cache();
     }
 
@@ -3379,12 +2657,9 @@ impl Lamp {
             ("Waiting For", &self.waiting_tasks, self.config.waiting_path()),
             ("Someday/Maybe", &self.someday_tasks, self.config.someday_path()),
         ];
-
         for (title, tasks, path) in saves {
             let content = OrgWriter::write_file(title, tasks);
-            if let Err(e) = std::fs::write(&path, &content) {
-                log::error!("Failed to save {}: {}", title, e);
-            }
+            let _ = std::fs::write(&path, &content);
         }
         self.save_projects();
         self.save_habits();
@@ -3393,93 +2668,56 @@ impl Lamp {
 
     fn save_projects(&self) {
         let content = OrgWriter::write_projects_file(&self.projects);
-        if let Err(e) = std::fs::write(self.config.projects_path(), &content) {
-            log::error!("Failed to save projects: {}", e);
-        }
+        let _ = std::fs::write(self.config.projects_path(), &content);
     }
 
     fn save_media(&self) {
         let content = OrgWriter::write_list_items_file("Media Recommendations", &self.media_items);
-        if let Err(e) = std::fs::write(self.config.media_path(), &content) {
-            log::error!("Failed to save media: {}", e);
-        }
+        let _ = std::fs::write(self.config.media_path(), &content);
     }
 
     fn save_shopping(&self) {
-        let content = OrgWriter::write_list_items_file("Shopping", &self.shopping_items);
-        if let Err(e) = std::fs::write(self.config.shopping_path(), &content) {
-            log::error!("Failed to save shopping: {}", e);
-        }
+        let content = OrgWriter::write_file("Shopping", &self.shopping_tasks);
+        let _ = std::fs::write(self.config.shopping_path(), &content);
     }
 
     fn save_contacts(&self) {
-        if let Err(e) = crate::sync::carddav::save_contacts(&self.config.contacts_path(), &self.contacts) {
-            log::error!("Failed to save contacts: {}", e);
-        }
+        let _ = crate::sync::carddav::save_contacts(&self.config.contacts_path(), &self.contacts);
     }
 
     fn save_accounts(&self) {
         let content = OrgWriter::write_accounts_file(&self.accounts);
-        if let Err(e) = std::fs::write(self.config.accounts_path(), &content) {
-            log::error!("Failed to save accounts: {}", e);
-        }
+        let _ = std::fs::write(self.config.accounts_path(), &content);
     }
 
     fn save_note(&self, note: &Note) {
-        let filename = format!("{}.org", note.id);
-        let path = self.config.notes_dir().join(&filename);
+        let path = self.config.notes_dir().join(format!("{}.org", note.id));
         let content = OrgWriter::write_note_file(note);
-        if let Err(e) = std::fs::write(&path, &content) {
-            log::error!("Failed to save note {}: {}", filename, e);
-        }
+        let _ = std::fs::write(&path, &content);
     }
 
     fn save_all_notes(&self) {
-        for note in &self.notes {
-            self.save_note(note);
-        }
+        for note in &self.notes { self.save_note(note); }
     }
 
     fn delete_note_file(&self, id: uuid::Uuid) {
-        let filename = format!("{}.org", id);
-        let path = self.config.notes_dir().join(&filename);
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                log::error!("Failed to delete note file {}: {}", filename, e);
-            }
-        }
+        let path = self.config.notes_dir().join(format!("{}.org", id));
+        if path.exists() { let _ = std::fs::remove_file(&path); }
     }
 
     fn save_habits(&self) {
         let mut out = String::new();
-        out.push_str("#+TITLE: Habits\n");
-        out.push_str("#+TODO: TODO NEXT WAITING SOMEDAY | DONE CANCELLED\n\n");
-        for habit in &self.habits {
-            out.push_str(&OrgWriter::write_habit_task(&habit.task, &habit.completions));
-            out.push('\n');
-        }
-        if let Err(e) = std::fs::write(self.config.habits_path(), &out) {
-            log::error!("Failed to save habits: {}", e);
-        }
+        out.push_str("#+TITLE: Habits\n#+TODO: TODO NEXT WAITING SOMEDAY | DONE CANCELLED\n\n");
+        for habit in &self.habits { out.push_str(&OrgWriter::write_habit_task(&habit.task, &habit.completions)); out.push('\n'); }
+        let _ = std::fs::write(self.config.habits_path(), &out);
     }
 
-    fn save_events(&self) {
-        event::save_events(&self.config.events_cache_path(), &self.events);
-    }
+    fn save_events(&self) { event::save_events(&self.config.events_cache_path(), &self.events); }
 
-    /// All discovered calendars.
-    fn all_discovered_calendars(&self) -> Vec<CalendarInfo> {
-        self.discovered_calendars.clone()
-    }
+    fn all_discovered_calendars(&self) -> Vec<CalendarInfo> { self.discovered_calendars.clone() }
 
-    fn save_config(&self) {
-        use cosmic::cosmic_config::CosmicConfigEntry;
-        if let Err(e) = self.config.write_entry(&self.cosmic_config) {
-            log::error!("Failed to save config: {:?}", e);
-        }
-    }
+    fn save_config(&self) { self.config.save(); }
 
-    /// Decrement the pending sync operations counter and finalize sync status when all done.
     fn finish_sync_op(&mut self) {
         self.sync_ops_pending = self.sync_ops_pending.saturating_sub(1);
         if self.sync_ops_pending == 0 && self.sync_status == SyncStatus::Syncing {
@@ -3489,124 +2727,100 @@ impl Lamp {
     }
 }
 
-fn parse_form_datetime(
-    date_str: &str,
-    time_str: &str,
-    all_day: bool,
-) -> Option<chrono::NaiveDateTime> {
+// --- Free functions ---
+
+fn parse_form_datetime(date_str: &str, time_str: &str, all_day: bool) -> Option<chrono::NaiveDateTime> {
     let date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()?;
-    if all_day {
-        Some(date.and_hms_opt(0, 0, 0).unwrap())
-    } else {
-        let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?;
-        Some(date.and_time(time))
-    }
+    if all_day { Some(date.and_hms_opt(0, 0, 0).unwrap()) }
+    else { let time = chrono::NaiveTime::parse_from_str(time_str.trim(), "%H:%M").ok()?; Some(date.and_time(time)) }
 }
 
-/// Capitalize the first letter, preserving the rest as-is (unlike full sentence-case
-/// which lowercases everything and destroys acronyms/proper nouns).
+fn parse_optional_date(s: &str) -> Result<Option<chrono::NaiveDate>, String> {
+    let s = s.trim();
+    if s.is_empty() { Ok(None) }
+    else { chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map(Some).map_err(|e| format!("{}", e)) }
+}
+
 fn sentence_case(s: &str) -> String {
     let s = s.trim();
-    if s.is_empty() {
-        return String::new();
-    }
+    if s.is_empty() { return String::new(); }
     let mut chars = s.chars();
     let first = chars.next().unwrap().to_uppercase().to_string();
     first + chars.as_str()
 }
 
 fn load_tasks(path: &std::path::Path) -> Vec<Task> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => convert::parse_tasks(&content),
-        Err(_) => Vec::new(),
-    }
+    std::fs::read_to_string(path).ok().map(|c| convert::parse_tasks(&c)).unwrap_or_default()
 }
 
 fn load_habits(path: &std::path::Path) -> Vec<Habit> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => convert::parse_habits(&content),
-        Err(_) => Vec::new(),
-    }
+    std::fs::read_to_string(path).ok().map(|c| convert::parse_habits(&c)).unwrap_or_default()
 }
 
-fn load_projects(path: &std::path::Path) -> Vec<crate::core::project::Project> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => convert::parse_projects(&content),
-        Err(_) => Vec::new(),
-    }
+fn load_projects(path: &std::path::Path) -> Vec<Project> {
+    std::fs::read_to_string(path).ok().map(|c| convert::parse_projects(&c)).unwrap_or_default()
 }
 
 fn load_list_items(path: &std::path::Path) -> Vec<ListItem> {
+    std::fs::read_to_string(path).ok().map(|c| convert::parse_list_items(&c)).unwrap_or_default()
+}
+
+fn load_shopping_tasks(path: &std::path::Path) -> Vec<Task> {
     match std::fs::read_to_string(path) {
-        Ok(content) => convert::parse_list_items(&content),
+        Ok(content) => {
+            let mut tasks = convert::parse_tasks(&content);
+            for task in &mut tasks {
+                if !task.extra_tags.contains(&"shopping".to_string()) { task.extra_tags.push("shopping".to_string()); }
+            }
+            if tasks.is_empty() {
+                let items = convert::parse_list_items(&content);
+                tasks = items.into_iter().map(|item| {
+                    let mut task = Task::new(item.title);
+                    task.id = item.id; task.notes = item.notes; task.created = item.created;
+                    task.extra_tags = vec!["shopping".to_string()];
+                    if item.done { task.state = TaskState::Done; task.completed = Some(item.created); }
+                    task
+                }).collect();
+            }
+            tasks
+        }
         Err(_) => Vec::new(),
     }
 }
 
 fn load_day_plan(path: &std::path::Path) -> Option<DayPlan> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| convert::parse_day_plan(&content))
+    std::fs::read_to_string(path).ok().and_then(|c| convert::parse_day_plan(&c))
 }
 
 fn load_accounts(path: &std::path::Path) -> Vec<Account> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => convert::parse_accounts(&content),
-        Err(_) => Vec::new(),
-    }
+    std::fs::read_to_string(path).ok().map(|c| convert::parse_accounts(&c)).unwrap_or_default()
 }
 
-/// Load notes from the per-file notes directory.
-/// Falls back to migrating from the old monolithic notes.org if present.
 fn load_notes_dir(notes_dir: &std::path::Path, old_notes_path: &std::path::Path) -> Vec<Note> {
-    let dir_has_files = notes_dir
-        .read_dir()
-        .ok()
+    let dir_has_files = notes_dir.read_dir().ok()
         .map(|mut rd| rd.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "org"))))
         .unwrap_or(false);
-
     if dir_has_files {
-        // Already migrated — load from dir
         load_notes_from_dir(notes_dir)
     } else if old_notes_path.exists() {
-        // Migrate from old monolithic file
-        let notes = match std::fs::read_to_string(old_notes_path) {
-            Ok(content) => convert::parse_notes(&content),
-            Err(_) => return Vec::new(),
-        };
-        // Write each note to its own file
+        let notes = std::fs::read_to_string(old_notes_path).ok().map(|c| convert::parse_notes(&c)).unwrap_or_default();
         for note in &notes {
-            let filename = format!("{}.org", note.id);
-            let path = notes_dir.join(&filename);
+            let path = notes_dir.join(format!("{}.org", note.id));
             let content = OrgWriter::write_note_file(note);
-            if let Err(e) = std::fs::write(&path, &content) {
-                log::error!("Migration: failed to write {}: {}", path.display(), e);
-            }
+            let _ = std::fs::write(&path, &content);
         }
-        // Remove old monolithic file
-        if let Err(e) = std::fs::remove_file(old_notes_path) {
-            log::warn!("Failed to remove old notes.org: {}", e);
-        }
-        log::info!("Migrated {} notes to per-file storage", notes.len());
+        let _ = std::fs::remove_file(old_notes_path);
         notes
-    } else {
-        Vec::new()
-    }
+    } else { Vec::new() }
 }
 
 fn load_notes_from_dir(dir: &std::path::Path) -> Vec<Note> {
     let mut notes = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return notes,
-    };
+    let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return notes };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "org") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let mut parsed = convert::parse_notes(&content);
-                notes.append(&mut parsed);
-            }
+            if let Ok(content) = std::fs::read_to_string(&path) { notes.append(&mut convert::parse_notes(&content)); }
         }
     }
     notes
@@ -3614,37 +2828,6 @@ fn load_notes_from_dir(dir: &std::path::Path) -> Vec<Note> {
 
 fn build_backlink_index(notes: &[Note]) -> HashMap<LinkTarget, Vec<uuid::Uuid>> {
     let mut idx: HashMap<LinkTarget, Vec<uuid::Uuid>> = HashMap::new();
-    for note in notes {
-        for link in &note.links {
-            idx.entry(link.clone()).or_default().push(note.id);
-        }
-    }
+    for note in notes { for link in &note.links { idx.entry(link.clone()).or_default().push(note.id); } }
     idx
-}
-
-fn state_button<'a>(label: &'a str, value: TaskState, current: &TaskState) -> Element<'a, Message> {
-    let btn = if *current == value {
-        button::suggested(label)
-    } else {
-        button::standard(label)
-    };
-    btn.on_press(Message::CaptureFormState(value)).into()
-}
-
-fn priority_button<'a>(label: &'a str, value: Option<Priority>, current: &Option<Priority>) -> Element<'a, Message> {
-    let btn = if *current == value {
-        button::suggested(label)
-    } else {
-        button::standard(label)
-    };
-    btn.on_press(Message::CaptureFormPriority(value)).into()
-}
-
-fn esc_button<'a>(label: &str, value: Option<u32>, current: &Option<u32>) -> Element<'a, Message> {
-    let btn = if *current == value {
-        button::suggested(label.to_string())
-    } else {
-        button::standard(label.to_string())
-    };
-    btn.on_press(Message::CaptureFormEsc(value)).into()
 }

@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
-use chrono::{Duration, Local, NaiveDate, Datelike, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use uuid::Uuid;
 
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, checkbox, column, container, dropdown, icon, row, text, text_input};
-use cosmic::{Element, theme};
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::core::task::{Priority, Task, TaskState};
 use crate::fl;
 use crate::message::{Message, SortColumn};
+use crate::sync::carddav::Contact;
+use crate::ui::{self, Sender};
 
 const STATE_LABELS: &[&str] = &["TODO", "NEXT", "WAIT", "SOME"];
 const ESC_LABELS: &[&str] = &["-", "5", "10", "15", "20", "25", "30", "40", "50", "75", "100"];
@@ -28,25 +29,23 @@ const ESC_VALUES: &[Option<u32>] = &[
 ];
 
 // Column widths for consistent alignment
-const COL_CHECK: f32 = 28.0;
-const COL_STATE: f32 = 76.0;
-const COL_PRI: f32 = 32.0;
-const COL_CTX: f32 = 120.0;
-const COL_PROJECT: f32 = 100.0;
-const COL_DATE: f32 = 96.0;
-const COL_ESC: f32 = 48.0;
-const COL_DELETE: f32 = 40.0;
-
-use crate::sync::carddav::Contact;
+const COL_CHECK: i32 = 28;
+const COL_STATE: i32 = 76;
+const COL_PRI: i32 = 32;
+const COL_CTX: i32 = 120;
+const COL_PROJECT: i32 = 100;
+const COL_DATE: i32 = 96;
+const COL_ESC: i32 = 48;
+const COL_DELETE: i32 = 40;
 
 /// Context passed to task grid.
-pub struct TaskRowCtx<'a> {
-    pub contexts: &'a [String],
-    pub project_names: &'a [String],
+pub struct TaskRowCtx {
+    pub contexts: Vec<String>,
+    pub project_names: Vec<String>,
     pub expanded_task: Option<Uuid>,
-    pub note_inputs: &'a HashMap<Uuid, String>,
-    pub waiting_for_inputs: &'a HashMap<Uuid, String>,
-    pub contacts: &'a [Contact],
+    pub note_inputs: HashMap<Uuid, String>,
+    pub waiting_for_inputs: HashMap<Uuid, String>,
+    pub contacts: Vec<Contact>,
 }
 
 // --- Date picker presets ---
@@ -65,7 +64,7 @@ fn date_presets(today: NaiveDate) -> Vec<DatePreset> {
     let next_monday = today + Duration::days(if days_to_monday == 0 { 7 } else { days_to_monday });
 
     vec![
-        DatePreset { label: "—".into(), date: None },
+        DatePreset { label: "\u{2014}".into(), date: None },
         DatePreset { label: format!("Today {}", today.format("%d")), date: Some(today) },
         DatePreset { label: format!("Tmrw {}", tomorrow.format("%d")), date: Some(tomorrow) },
         DatePreset { label: format!("Mon {}", next_monday.format("%d")), date: Some(next_monday) },
@@ -77,38 +76,53 @@ fn date_presets(today: NaiveDate) -> Vec<DatePreset> {
 
 fn date_dropdown(
     current: Option<NaiveDate>,
-    on_select: impl Fn(Option<NaiveDate>) -> Message + Send + Sync + 'static,
-) -> Element<'static, Message> {
+    on_select: impl Fn(Option<NaiveDate>) -> Message + 'static,
+    sender: &Sender,
+) -> gtk::DropDown {
     let today = Local::now().date_naive();
     let presets = date_presets(today);
 
-    let labels: Vec<String> = presets.iter().map(|p| p.label.clone()).collect();
+    let mut labels: Vec<String> = presets.iter().map(|p| p.label.clone()).collect();
+    let mut dates: Vec<Option<NaiveDate>> = presets.iter().map(|p| p.date).collect();
+
     let selected: Option<usize> = current.and_then(|d| {
         presets.iter().position(|p| p.date == Some(d))
     });
 
     // If current date doesn't match any preset, prepend it
-    if let Some(date) = current {
+    let sel_idx = if let Some(date) = current {
         if selected.is_none() {
-            let mut custom_labels = vec![date.format("%Y-%m-%d").to_string()];
-            custom_labels.extend(labels);
-            let mut custom_dates: Vec<Option<NaiveDate>> = vec![Some(date)];
-            custom_dates.extend(presets.iter().map(|p| p.date));
-
-            return dropdown(custom_labels, Some(0usize), move |idx| {
-                on_select(custom_dates[idx])
-            })
-            .width(Length::Shrink)
-            .into();
+            labels.insert(0, date.format("%Y-%m-%d").to_string());
+            dates.insert(0, Some(date));
+            Some(0)
+        } else {
+            selected
         }
+    } else {
+        selected
+    };
+
+    let items: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    let model = gtk::StringList::new(&items);
+    let dd = gtk::DropDown::new(Some(model), gtk::Expression::NONE);
+
+    if let Some(idx) = sel_idx {
+        dd.set_selected(idx as u32);
+    } else {
+        dd.set_selected(gtk::INVALID_LIST_POSITION);
     }
 
-    let dates: Vec<Option<NaiveDate>> = presets.iter().map(|p| p.date).collect();
-    dropdown(labels, selected, move |idx| {
-        on_select(dates[idx])
-    })
-    .width(Length::Shrink)
-    .into()
+    {
+        let s = sender.clone();
+        dd.connect_selected_notify(move |dd| {
+            let idx = dd.selected() as usize;
+            if idx < dates.len() {
+                s.emit(on_select(dates[idx]));
+            }
+        });
+    }
+
+    dd
 }
 
 // --- State helpers ---
@@ -133,43 +147,41 @@ fn index_to_state(idx: usize) -> TaskState {
     }
 }
 
-// --- Fixed-width column helpers ---
-
-fn col(width: f32, content: impl Into<Element<'static, Message>>) -> Element<'static, Message> {
-    container(content).width(Length::Fixed(width)).into()
-}
-
-fn col_fill(content: impl Into<Element<'static, Message>>) -> Element<'static, Message> {
-    container(content).width(Length::Fill).into()
-}
-
-// --- Table-based task list ---
+// --- Sort indicator ---
 
 fn sort_indicator(sort: Option<(SortColumn, bool)>, col: SortColumn) -> &'static str {
     match sort {
-        Some((c, true)) if c == col => " ▲",
-        Some((c, false)) if c == col => " ▼",
+        Some((c, true)) if c == col => " \u{25B2}",
+        Some((c, false)) if c == col => " \u{25BC}",
         _ => "",
     }
 }
 
-fn header_label(
+// --- Header helpers ---
+
+fn header_label_widget(
     label: &str,
-    width: f32,
+    width: i32,
     sortable: bool,
     sort: Option<(SortColumn, bool)>,
     sort_col: SortColumn,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     if sortable {
         let display = format!("{}{}", label, sort_indicator(sort, sort_col));
-        col(width,
-            button::custom(text::caption(display).size(12.0))
-                .padding([0, 0])
-                .class(theme::Button::Text)
-                .on_press(Message::SetAllTasksSort(sort_col)),
-        )
+        let btn = ui::button_with_signal(
+            &display,
+            Some("flat"),
+            Message::SetAllTasksSort(sort_col),
+            sender,
+        );
+        btn.add_css_class("caption");
+        btn.set_size_request(width, -1);
+        btn.upcast()
     } else {
-        col(width, text::caption(label.to_string()))
+        let l = ui::caption(label);
+        l.set_size_request(width, -1);
+        l.upcast()
     }
 }
 
@@ -178,41 +190,60 @@ fn header_label_fill(
     sortable: bool,
     sort: Option<(SortColumn, bool)>,
     sort_col: SortColumn,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     if sortable {
         let display = format!("{}{}", label, sort_indicator(sort, sort_col));
-        col_fill(
-            button::custom(text::caption(display).size(12.0))
-                .padding([0, 0])
-                .class(theme::Button::Text)
-                .on_press(Message::SetAllTasksSort(sort_col)),
-        )
+        let btn = ui::button_with_signal(
+            &display,
+            Some("flat"),
+            Message::SetAllTasksSort(sort_col),
+            sender,
+        );
+        btn.add_css_class("caption");
+        btn.set_hexpand(true);
+        btn.upcast()
     } else {
-        col_fill(text::caption(label.to_string()))
+        let l = ui::caption(label);
+        l.set_hexpand(true);
+        l.upcast()
     }
 }
 
-fn header_row(has_projects: bool, sortable: bool, sort: Option<(SortColumn, bool)>) -> Element<'static, Message> {
-    let mut r = row()
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .push(col(COL_CHECK, text::caption("")))
-        .push(header_label(&fl!("col-state"), COL_STATE, sortable, sort, SortColumn::State))
-        .push(header_label(&fl!("col-priority"), COL_PRI, sortable, sort, SortColumn::Priority))
-        .push(header_label_fill(&fl!("col-title"), sortable, sort, SortColumn::Title))
-        .push(header_label(&fl!("col-context"), COL_CTX, sortable, sort, SortColumn::Context));
+fn header_row(
+    has_projects: bool,
+    sortable: bool,
+    sort: Option<(SortColumn, bool)>,
+    sender: &Sender,
+) -> gtk::Widget {
+    let r = ui::centered_hbox(8);
+
+    // Empty checkbox column
+    let check_spacer = gtk::Label::new(Some(""));
+    check_spacer.set_size_request(COL_CHECK, -1);
+    r.append(&check_spacer);
+
+    r.append(&header_label_widget(&fl!("col-state"), COL_STATE, sortable, sort, SortColumn::State, sender));
+    r.append(&header_label_widget(&fl!("col-priority"), COL_PRI, sortable, sort, SortColumn::Priority, sender));
+    r.append(&header_label_fill(&fl!("col-title"), sortable, sort, SortColumn::Title, sender));
+    r.append(&header_label_widget(&fl!("col-context"), COL_CTX, sortable, sort, SortColumn::Context, sender));
 
     if has_projects {
-        r = r.push(col(COL_PROJECT, text::caption(fl!("col-project"))));
+        let proj_label = ui::caption(&fl!("col-project"));
+        proj_label.set_size_request(COL_PROJECT, -1);
+        r.append(&proj_label);
     }
 
-    r = r
-        .push(header_label(&fl!("esc-column"), COL_ESC, sortable, sort, SortColumn::Esc))
-        .push(header_label(&fl!("col-scheduled"), COL_DATE, sortable, sort, SortColumn::Scheduled))
-        .push(header_label(&fl!("col-deadline"), COL_DATE, sortable, sort, SortColumn::Deadline))
-        .push(col(COL_DELETE, text::caption("")));
+    r.append(&header_label_widget(&fl!("esc-column"), COL_ESC, sortable, sort, SortColumn::Esc, sender));
+    r.append(&header_label_widget(&fl!("col-scheduled"), COL_DATE, sortable, sort, SortColumn::Scheduled, sender));
+    r.append(&header_label_widget(&fl!("col-deadline"), COL_DATE, sortable, sort, SortColumn::Deadline, sender));
 
-    r.width(Length::Fill).into()
+    let del_spacer = gtk::Label::new(Some(""));
+    del_spacer.set_size_request(COL_DELETE, -1);
+    r.append(&del_spacer);
+
+    r.set_hexpand(true);
+    r.upcast()
 }
 
 /// Build a column with header + task rows, all columns aligned via fixed widths.
@@ -222,50 +253,60 @@ pub fn task_grid<'a>(
     tasks: impl Iterator<Item = &'a Task>,
     ctx: &TaskRowCtx,
     sort: Option<Option<(SortColumn, bool)>>,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let has_projects = !ctx.project_names.is_empty();
     let sortable = sort.is_some();
     let active_sort = sort.flatten();
 
-    let mut content = column()
-        .spacing(4)
-        .width(Length::Fill)
-        .push(header_row(has_projects, sortable, active_sort));
+    let content = ui::vbox(4);
+    content.set_hexpand(true);
+    content.append(&header_row(has_projects, sortable, active_sort, sender));
 
     for task in tasks {
-        content = content.push(task_row(task, ctx, has_projects));
+        content.append(&task_row(task, ctx, has_projects, sender));
     }
 
-    content.into()
+    content.upcast()
 }
 
 fn task_row(
     task: &Task,
     ctx: &TaskRowCtx,
     has_projects: bool,
-) -> Element<'static, Message> {
+    sender: &Sender,
+) -> gtk::Widget {
     let is_done = task.state.is_done();
     let id = task.id;
 
+    let r = ui::centered_hbox(8);
+
     // 1. Checkbox
-    let check: Element<'static, Message> = col(COL_CHECK,
-        checkbox("", is_done)
-            .on_toggle(move |_| Message::ToggleTaskDone(id)),
+    let check = ui::check_button_with_signal(
+        is_done,
+        Message::ToggleTaskDone(id),
+        sender,
     );
+    check.set_size_request(COL_CHECK, -1);
+    r.append(&check);
 
     // 2. State dropdown
-    let state: Element<'static, Message> = if !is_done {
+    if !is_done {
         let labels: Vec<String> = STATE_LABELS.iter().map(|s| s.to_string()).collect();
         let selected = state_to_index(&task.state);
-        col(COL_STATE,
-            dropdown(labels, selected, move |idx| {
-                Message::SetTaskState(id, index_to_state(idx))
-            })
-            .width(Length::Shrink),
-        )
+        let dd = ui::dropdown_with_signal(
+            &labels,
+            selected,
+            move |idx| Message::SetTaskState(id, index_to_state(idx)),
+            sender,
+        );
+        dd.set_size_request(COL_STATE, -1);
+        r.append(&dd);
     } else {
-        col(COL_STATE, text::caption("done"))
-    };
+        let done_label = ui::caption("done");
+        done_label.set_size_request(COL_STATE, -1);
+        r.append(&done_label);
+    }
 
     // 3. Priority
     let next_priority = match task.priority {
@@ -274,52 +315,58 @@ fn task_row(
         Some(Priority::B) => Some(Priority::C),
         Some(Priority::C) => None,
     };
-    let (pri_label, pri_style) = match task.priority {
-        Some(Priority::A) => ("A", theme::Button::Destructive),
-        Some(Priority::B) => ("B", theme::Button::Standard),
-        Some(Priority::C) => ("C", theme::Button::Text),
-        None => ("-", theme::Button::Text),
+    let (pri_label, pri_class) = match task.priority {
+        Some(Priority::A) => ("A", Some("destructive-action")),
+        Some(Priority::B) => ("B", None),
+        Some(Priority::C) => ("C", Some("flat")),
+        None => ("-", Some("flat")),
     };
-    let priority: Element<'static, Message> = col(COL_PRI,
-        button::custom(text::body(pri_label).size(12.0))
-            .padding([2, 6])
-            .class(pri_style)
-            .on_press(Message::SetTaskPriority(id, next_priority)),
+    let pri_btn = ui::button_with_signal(
+        pri_label,
+        pri_class,
+        Message::SetTaskPriority(id, next_priority),
+        sender,
     );
+    pri_btn.set_size_request(COL_PRI, -1);
+    r.append(&pri_btn);
 
     // 4. Title (clickable to expand/collapse notes) + waiting_for label
-    let title: Element<'static, Message> = {
-        let title_btn: Element<'static, Message> = button::custom(text::body(task.title.clone()))
-            .padding([0, 0])
-            .class(theme::Button::Text)
-            .on_press(Message::ToggleTaskExpand(id))
-            .into();
-        if let Some(ref wf) = task.waiting_for {
-            let label = format!("\u{2190} @{}", wf);
-            col_fill(
-                row()
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                    .push(title_btn)
-                    .push(text::caption(label).size(11.0)),
-            )
-        } else {
-            col_fill(title_btn)
-        }
-    };
+    let title_box = ui::centered_hbox(6);
+    title_box.set_hexpand(true);
+
+    let title_btn = ui::button_with_signal(
+        &task.title,
+        Some("flat"),
+        Message::ToggleTaskExpand(id),
+        sender,
+    );
+    title_box.append(&title_btn);
+
+    if let Some(ref wf) = task.waiting_for {
+        let wf_label = format!("\u{2190} @{}", wf);
+        let wf_caption = ui::caption(&wf_label);
+        title_box.append(&wf_caption);
+    }
+
+    r.append(&title_box);
 
     // 5. Context (tags + add dropdown)
-    let mut ctx_items: Vec<Element<'static, Message>> = Vec::new();
+    let ctx_box = ui::centered_hbox(4);
+    ctx_box.set_size_request(COL_CTX, -1);
+
     for ctx_tag in &task.contexts {
+        let remove_label = format!("{} x", ctx_tag);
         let ctx_owned = ctx_tag.clone();
-        ctx_items.push(
-            button::custom(text::caption(format!("{} x", ctx_tag)).size(11.0))
-                .padding([2, 8])
-                .class(theme::Button::Text)
-                .on_press(Message::RemoveContext(id, ctx_owned))
-                .into(),
+        let btn = ui::button_with_signal(
+            &remove_label,
+            Some("flat"),
+            Message::RemoveContext(id, ctx_owned),
+            sender,
         );
+        btn.add_css_class("caption");
+        ctx_box.append(&btn);
     }
+
     let addable: Vec<String> = ctx.contexts
         .iter()
         .filter(|c| !task.contexts.contains(c))
@@ -327,79 +374,85 @@ fn task_row(
         .collect();
     if !addable.is_empty() {
         let addable_for_closure = addable.clone();
-        ctx_items.push(
-            dropdown(addable, None::<usize>, move |idx| {
-                Message::AddContext(id, addable_for_closure[idx].clone())
-            })
-            .width(Length::Shrink)
-            .into(),
+        let dd = ui::dropdown_with_signal(
+            &addable,
+            None,
+            move |idx| Message::AddContext(id, addable_for_closure[idx].clone()),
+            sender,
         );
+        ctx_box.append(&dd);
     }
-    let context: Element<'static, Message> = col(COL_CTX,
-        row::with_children(ctx_items).spacing(4).align_y(Alignment::Center),
-    );
 
-    // 6. Build the row
-    let mut r = row()
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .push(check)
-        .push(state)
-        .push(priority)
-        .push(title)
-        .push(context);
+    r.append(&ctx_box);
 
-    // 7. Project dropdown (conditional)
+    // 6. Project dropdown (conditional)
     if has_projects {
-        let names = ctx.project_names.to_vec();
+        let names = ctx.project_names.clone();
         let names_for_closure = names.clone();
         let selected: Option<usize> = task
             .project
             .as_ref()
             .and_then(|p| names.iter().position(|n| n == p));
-        r = r.push(col(COL_PROJECT,
-            dropdown(names, selected, move |idx| {
-                Message::MoveToProject(id, names_for_closure[idx].clone())
-            })
-            .width(Length::Shrink),
-        ));
+        let dd = ui::dropdown_with_signal(
+            &names,
+            selected,
+            move |idx| Message::MoveToProject(id, names_for_closure[idx].clone()),
+            sender,
+        );
+        dd.set_size_request(COL_PROJECT, -1);
+        r.append(&dd);
     }
 
-    // 8. ESC dropdown
+    // 7. ESC dropdown
     let esc_labels: Vec<String> = ESC_LABELS.iter().map(|s| s.to_string()).collect();
-    let esc_selected: Option<usize> = task.esc.and_then(|v| {
-        ESC_VALUES.iter().position(|ev| *ev == Some(v))
-    }).or(Some(0)); // Default to "-" when None
-    let esc_selected = if task.esc.is_none() { Some(0) } else { esc_selected };
-    r = r.push(col(COL_ESC,
-        dropdown(esc_labels, esc_selected, move |idx| {
-            Message::SetTaskEsc(id, ESC_VALUES[idx])
-        })
-        .width(Length::Shrink),
-    ));
+    let esc_selected: Option<usize> = if task.esc.is_none() {
+        Some(0)
+    } else {
+        task.esc.and_then(|v| {
+            ESC_VALUES.iter().position(|ev| *ev == Some(v))
+        }).or(Some(0))
+    };
+    let esc_dd = ui::dropdown_with_signal(
+        &esc_labels,
+        esc_selected,
+        move |idx| Message::SetTaskEsc(id, ESC_VALUES[idx]),
+        sender,
+    );
+    esc_dd.set_size_request(COL_ESC, -1);
+    r.append(&esc_dd);
 
-    // 9. Scheduled date picker
+    // 8. Scheduled date picker
     let scheduled = task.scheduled;
-    r = r.push(col(COL_DATE, date_dropdown(scheduled, move |d| Message::SetScheduled(id, d))));
+    let sched_dd = date_dropdown(scheduled, move |d| Message::SetScheduled(id, d), sender);
+    sched_dd.set_size_request(COL_DATE, -1);
+    r.append(&sched_dd);
 
-    // 10. Deadline date picker
+    // 9. Deadline date picker
     let deadline = task.deadline;
-    r = r.push(col(COL_DATE, date_dropdown(deadline, move |d| Message::SetDeadline(id, d))));
+    let dead_dd = date_dropdown(deadline, move |d| Message::SetDeadline(id, d), sender);
+    dead_dd.set_size_request(COL_DATE, -1);
+    r.append(&dead_dd);
 
-    // 11. Delete button
-    r = r.push(col(COL_DELETE,
-        button::icon(icon::from_name("edit-delete-symbolic"))
-            .on_press(Message::DeleteTask(id)),
-    ));
+    // 10. Delete button
+    let del_btn = ui::icon_button_with_signal(
+        "edit-delete-symbolic",
+        Message::DeleteTask(id),
+        sender,
+    );
+    del_btn.set_size_request(COL_DELETE, -1);
+    r.append(&del_btn);
 
-    let data_row: Element<'static, Message> = r.width(Length::Fill).into();
+    r.set_hexpand(true);
 
     // If this task is expanded, show notes panel below the row
     if ctx.expanded_task == Some(id) {
         let notes_text = task.notes.clone();
         let input_value = ctx.note_inputs.get(&id).cloned().unwrap_or_default();
 
-        let mut notes_col = column().spacing(4).padding([4, 0, 4, 36]);
+        let notes_col = ui::vbox(4);
+        notes_col.set_margin_start(36);
+        notes_col.set_margin_top(4);
+        notes_col.set_margin_bottom(4);
 
         // Waiting-for input and follow-up date (only for Waiting state tasks)
         if task.state == TaskState::Waiting {
@@ -407,27 +460,28 @@ fn task_row(
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| task.waiting_for.clone().unwrap_or_default());
-            let wf_input = text_input::text_input("Waiting for...", wf_value.clone())
-                .on_input(move |v| Message::WaitingForInputChanged(id, v))
-                .on_submit(move |_| Message::SetWaitingFor(id, wf_value.clone()))
-                .width(Length::Fill);
-            notes_col = notes_col.push(
-                row()
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .push(text::caption("Waiting for:"))
-                    .push(wf_input),
+
+            let wf_row = ui::centered_hbox(8);
+            wf_row.append(&ui::caption("Waiting for:"));
+
+            let wf_value_for_submit = wf_value.clone();
+            let wf_input = ui::entry_with_signal(
+                "Waiting for...",
+                &wf_value,
+                move |v| Message::WaitingForInputChanged(id, v),
+                Some(Box::new(move || Message::SetWaitingFor(id, wf_value_for_submit.clone()))),
+                sender,
             );
+            wf_row.append(&wf_input);
+            notes_col.append(&wf_row);
 
             // Follow-up date picker
             let follow_up = task.follow_up;
-            notes_col = notes_col.push(
-                row()
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .push(text::caption("Follow up:"))
-                    .push(date_dropdown(follow_up, move |d| Message::SetFollowUp(id, d))),
-            );
+            let fu_row = ui::centered_hbox(8);
+            fu_row.append(&ui::caption("Follow up:"));
+            let fu_dd = date_dropdown(follow_up, move |d| Message::SetFollowUp(id, d), sender);
+            fu_row.append(&fu_dd);
+            notes_col.append(&fu_row);
 
             // Contact suggestions for waiting_for input
             if !ctx.contacts.is_empty() {
@@ -443,57 +497,66 @@ fn task_row(
                         .take(5)
                         .collect();
                     if !suggestions.is_empty() {
-                        let mut suggestion_row = row().spacing(4);
+                        let suggestion_row = ui::hbox(4);
                         for contact in suggestions {
                             let name = contact.name.clone();
-                            suggestion_row = suggestion_row.push(
-                                button::custom(text::caption(name.clone()).size(11.0))
-                                    .padding([2, 8])
-                                    .class(theme::Button::Text)
-                                    .on_press(Message::SetWaitingFor(id, name)),
+                            let name2 = name.clone();
+                            let btn = ui::button_with_signal(
+                                &name,
+                                Some("flat"),
+                                Message::SetWaitingFor(id, name2),
+                                sender,
                             );
+                            btn.add_css_class("caption");
+                            suggestion_row.append(&btn);
                         }
-                        notes_col = notes_col.push(suggestion_row);
+                        notes_col.append(&suggestion_row);
                     }
                 }
             }
 
             // Show delegated date if set
             if let Some(delegated) = task.delegated {
-                notes_col = notes_col.push(
-                    text::caption(format!("Delegated: {}", delegated.format("%Y-%m-%d"))).size(11.0),
-                );
+                let del_text = format!("Delegated: {}", delegated.format("%Y-%m-%d"));
+                notes_col.append(&ui::caption(&del_text));
             }
         }
 
         // Editable title (Enter to confirm + collapse)
-        let title_input = text_input::text_input(fl!("task-title-placeholder"), task.title.clone())
-            .on_input(move |v| Message::UpdateTaskTitle(id, v))
-            .on_submit(move |_| Message::ToggleTaskExpand(id))
-            .width(Length::Fill);
-        notes_col = notes_col.push(title_input);
+        let title_input = ui::entry_with_signal(
+            &fl!("task-title-placeholder"),
+            &task.title,
+            move |v| Message::UpdateTaskTitle(id, v),
+            Some(Box::new(move || Message::ToggleTaskExpand(id))),
+            sender,
+        );
+        notes_col.append(&title_input);
 
         if !notes_text.is_empty() {
-            notes_col = notes_col.push(
-                container(text::body(notes_text))
-                    .padding([4, 8])
-                    .width(Length::Fill),
-            );
+            let notes_label = ui::body(&notes_text);
+            notes_label.set_margin_start(8);
+            notes_label.set_margin_end(8);
+            notes_label.set_margin_top(4);
+            notes_label.set_margin_bottom(4);
+            notes_label.set_hexpand(true);
+            notes_col.append(&notes_label);
         }
 
-        let note_input = text_input::text_input(fl!("task-note-placeholder"), input_value)
-            .on_input(move |v| Message::NoteInputChanged(id, v))
-            .on_submit(move |_| Message::AppendNote(id))
-            .width(Length::Fill);
+        let note_input = ui::entry_with_signal(
+            &fl!("task-note-placeholder"),
+            &input_value,
+            move |v| Message::NoteInputChanged(id, v),
+            Some(Box::new(move || Message::AppendNote(id))),
+            sender,
+        );
+        notes_col.append(&note_input);
 
-        notes_col = notes_col.push(note_input);
-
-        column()
-            .push(data_row)
-            .push(notes_col)
-            .width(Length::Fill)
-            .into()
+        let wrapper = ui::vbox(0);
+        wrapper.set_hexpand(true);
+        wrapper.append(&r);
+        wrapper.append(&notes_col);
+        wrapper.upcast()
     } else {
-        data_row
+        r.upcast()
     }
 }

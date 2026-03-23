@@ -236,6 +236,12 @@ class CalDavClient(
         changes to newToken
     }
 
+    /** Fetch the current sync-token for a collection via PROPFIND. */
+    suspend fun getSyncToken(calendarHref: String): String? {
+        val body = propfind(resolveUrl(calendarHref), 0, PROPFIND_SYNC_TOKEN)
+        return WebDavXmlParser.extractSyncToken(body)
+    }
+
     // --- Helpers ---
 
     private suspend fun propfind(url: String, depth: Int, body: String): String {
@@ -305,6 +311,11 @@ class CalDavClient(
                     <d:resourcetype/>
                     <c:supported-calendar-component-set/>
                 </d:prop>
+            </d:propfind>""".trimIndent()
+
+        private val PROPFIND_SYNC_TOKEN = """<?xml version="1.0" encoding="utf-8"?>
+            <d:propfind xmlns:d="DAV:">
+                <d:prop><d:sync-token/></d:prop>
             </d:propfind>""".trimIndent()
 
         private val REPORT_VTODOS = """<?xml version="1.0" encoding="utf-8"?>

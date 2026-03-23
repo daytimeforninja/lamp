@@ -51,15 +51,14 @@
             ];
 
             buildInputs = with pkgs; [
-              libxkbcommon
-              wayland
-              vulkan-loader
-              libinput
-              udev
-              mesa
-              expat
-              fontconfig
-              freetype
+              gtk4
+              libadwaita
+              glib
+              cairo
+              pango
+              gdk-pixbuf
+              graphene
+              harfbuzz
               openssl
               systemd
             ];
@@ -76,9 +75,8 @@
               install -Dm0644 res/icons/hicolor/scalable/apps/dev.lamp.app.svg $out/share/icons/hicolor/scalable/apps/dev.lamp.app.svg
               wrapProgram $out/bin/lamp \
                 --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [
-                  pkgs.libxkbcommon
-                  pkgs.wayland
-                  pkgs.vulkan-loader
+                  pkgs.gtk4
+                  pkgs.libadwaita
                 ]}
             '';
           });
@@ -102,23 +100,21 @@
             ];
 
             buildInputs = with pkgs; [
-              libxkbcommon
-              wayland
-              vulkan-loader
-              libinput
-              udev
-              mesa
-              expat
-              fontconfig
-              freetype
+              gtk4
+              libadwaita
+              glib
+              cairo
+              pango
+              gdk-pixbuf
+              graphene
+              harfbuzz
               openssl
               systemd
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [
-              libxkbcommon
-              wayland
-              vulkan-loader
+              gtk4
+              libadwaita
             ]);
           };
         }

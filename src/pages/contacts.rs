@@ -1,17 +1,15 @@
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::Local;
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, column, container, dropdown, flex_row, icon, row, scrollable, text, text_input};
-use cosmic::{Element, theme};
+use relm4::gtk;
+use relm4::gtk::prelude::*;
 
 use crate::fl;
 use crate::message::{ContactField, Message};
 use crate::sync::carddav::Contact;
+use crate::ui::{self, Sender};
 
-const CARD_WIDTH: f32 = 280.0;
-
-const PREFERRED_LABELS: &[&str] = &["—", "Email", "Phone", "Signal"];
+const PREFERRED_LABELS: &[&str] = &["\u{2014}", "Email", "Phone", "Signal"];
 
 fn preferred_to_index(method: Option<&str>) -> Option<usize> {
     match method {
@@ -42,173 +40,190 @@ fn last_contacted_text(contact: &Contact) -> String {
     }
 }
 
-fn detail_line(label: &str, value: &Option<String>) -> Option<Element<'static, Message>> {
+fn detail_line(label_text: &str, value: &Option<String>) -> Option<gtk::Box> {
     value.as_ref().filter(|v| !v.is_empty()).map(|v| {
-        row()
-            .spacing(6)
-            .push(text::caption(format!("{}:", label)))
-            .push(text::caption(v.clone()))
-            .into()
+        let row = ui::hbox(6);
+        row.append(&ui::caption(&format!("{}:", label_text)));
+        row.append(&ui::caption(v));
+        row
     })
 }
 
-fn card_front(contact: &Contact) -> Element<'static, Message> {
-    let mut col = column().spacing(4);
+fn card_front(contact: &Contact) -> gtk::Box {
+    let col = ui::vbox(4);
 
-    col = col.push(text::body(contact.name.clone()));
+    col.append(&ui::body(&contact.name));
 
     let groups_label = if contact.groups.is_empty() {
         fl!("contacts-personal")
     } else {
         contact.groups.join(", ")
     };
-    col = col.push(text::caption(groups_label).size(11.0));
-
-    col = col.push(text::caption(last_contacted_text(contact)).size(11.0));
+    col.append(&ui::caption(&groups_label));
+    col.append(&ui::caption(&last_contacted_text(contact)));
 
     if let Some(ref m) = contact.preferred_method {
-        col = col.push(text::caption(fl!("contacts-preferred", method = m.as_str())).size(11.0));
+        col.append(&ui::caption(&fl!("contacts-preferred", method = m.as_str())));
     }
 
-    col.into()
+    col
 }
 
 fn card_back(
     contact: &Contact,
     index: usize,
     confirming_delete: bool,
-) -> Element<'static, Message> {
-    let mut col = column().spacing(6);
+    sender: &Sender,
+) -> gtk::Box {
+    let col = ui::vbox(6);
 
-    col = col.push(text::body(contact.name.clone()));
+    col.append(&ui::body(&contact.name));
 
     if let Some(line) = detail_line(&fl!("contacts-email"), &contact.email) {
-        col = col.push(line);
+        col.append(&line);
     }
     if let Some(line) = detail_line(&fl!("contacts-phone"), &contact.phone) {
-        col = col.push(line);
+        col.append(&line);
     }
     if let Some(line) = detail_line(&fl!("contacts-website"), &contact.website) {
-        col = col.push(line);
+        col.append(&line);
     }
     if let Some(line) = detail_line(&fl!("contacts-signal"), &contact.signal) {
-        col = col.push(line);
+        col.append(&line);
     }
 
-    col = col.push(
-        button::suggested(fl!("btn-done"))
-            .on_press(Message::FlipContact(index)),
-    );
-
-    col = col.push(
-        button::standard(fl!("contacts-mark-contacted"))
-            .on_press(Message::MarkContacted(index)),
-    );
-
-    col = col.push(
-        button::standard(fl!("btn-edit"))
-            .on_press(Message::EditContact(index)),
-    );
+    col.append(&ui::button_with_signal(&fl!("btn-done"), Some("suggested-action"), Message::FlipContact(index), sender));
+    col.append(&ui::button_with_signal(&fl!("contacts-mark-contacted"), None, Message::MarkContacted(index), sender));
+    col.append(&ui::button_with_signal(&fl!("btn-edit"), None, Message::EditContact(index), sender));
 
     if confirming_delete {
-        col = col.push(
-            row()
-                .spacing(8)
-                .push(
-                    button::destructive(fl!("btn-delete"))
-                        .on_press(Message::DeleteContact(index)),
-                )
-                .push(
-                    button::standard(fl!("btn-cancel"))
-                        .on_press(Message::CancelDeleteContact),
-                ),
-        );
+        let row = ui::hbox(8);
+        row.append(&ui::button_with_signal(&fl!("btn-delete"), Some("destructive-action"), Message::DeleteContact(index), sender));
+        row.append(&ui::button_with_signal(&fl!("btn-cancel"), None, Message::CancelDeleteContact, sender));
+        col.append(&row);
     } else {
-        col = col.push(
-            button::icon(icon::from_name("edit-delete-symbolic"))
-                .on_press(Message::ConfirmDeleteContact(index)),
-        );
+        col.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::ConfirmDeleteContact(index), sender));
     }
 
-    col.into()
+    col
 }
 
-fn card_edit(contact: &Contact, index: usize) -> Element<'static, Message> {
-    let mut col = column().spacing(6);
+fn card_edit(contact: &Contact, index: usize, sender: &Sender) -> gtk::Box {
+    let col = ui::vbox(6);
 
-    col = col.push(text::body(contact.name.clone()));
+    col.append(&ui::body(&contact.name));
 
+    // Email
     let email_val = contact.email.clone().unwrap_or_default();
-    col = col.push(
-        text_input::text_input(fl!("contacts-email-placeholder"), email_val)
-            .on_input(move |v| Message::SetContactField(index, ContactField::Email, v))
-            .on_submit(move |_| Message::FlipContact(index))
-            .width(Length::Fill),
-    );
+    let email_entry = ui::entry(&fl!("contacts-email-placeholder"), &email_val);
+    {
+        let s = sender.clone();
+        email_entry.connect_changed(move |e| {
+            s.emit(Message::SetContactField(index, ContactField::Email, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        email_entry.connect_activate(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+    }
+    col.append(&email_entry);
 
+    // Phone
     let phone_val = contact.phone.clone().unwrap_or_default();
-    col = col.push(
-        text_input::text_input(fl!("contacts-phone-placeholder"), phone_val)
-            .on_input(move |v| Message::SetContactField(index, ContactField::Phone, v))
-            .on_submit(move |_| Message::FlipContact(index))
-            .width(Length::Fill),
-    );
+    let phone_entry = ui::entry(&fl!("contacts-phone-placeholder"), &phone_val);
+    {
+        let s = sender.clone();
+        phone_entry.connect_changed(move |e| {
+            s.emit(Message::SetContactField(index, ContactField::Phone, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        phone_entry.connect_activate(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+    }
+    col.append(&phone_entry);
 
+    // Website
     let website_val = contact.website.clone().unwrap_or_default();
-    col = col.push(
-        text_input::text_input(fl!("contacts-url-placeholder"), website_val)
-            .on_input(move |v| Message::SetContactField(index, ContactField::Website, v))
-            .on_submit(move |_| Message::FlipContact(index))
-            .width(Length::Fill),
-    );
+    let website_entry = ui::entry(&fl!("contacts-url-placeholder"), &website_val);
+    {
+        let s = sender.clone();
+        website_entry.connect_changed(move |e| {
+            s.emit(Message::SetContactField(index, ContactField::Website, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        website_entry.connect_activate(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+    }
+    col.append(&website_entry);
 
+    // Signal
     let signal_val = contact.signal.clone().unwrap_or_default();
-    col = col.push(
-        text_input::text_input(fl!("contacts-signal-placeholder"), signal_val)
-            .on_input(move |v| Message::SetContactField(index, ContactField::Signal, v))
-            .on_submit(move |_| Message::FlipContact(index))
-            .width(Length::Fill),
-    );
+    let signal_entry = ui::entry(&fl!("contacts-signal-placeholder"), &signal_val);
+    {
+        let s = sender.clone();
+        signal_entry.connect_changed(move |e| {
+            s.emit(Message::SetContactField(index, ContactField::Signal, e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        signal_entry.connect_activate(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+    }
+    col.append(&signal_entry);
 
     // Preferred method dropdown
     let pref_labels: Vec<String> = PREFERRED_LABELS.iter().map(|s| s.to_string()).collect();
     let pref_selected = preferred_to_index(contact.preferred_method.as_deref());
-    col = col.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(text::caption(fl!("contacts-preferred-label")))
-            .push(
-                dropdown(pref_labels, pref_selected, move |idx| {
-                    let val = index_to_preferred(idx).unwrap_or_default();
-                    Message::SetContactField(index, ContactField::PreferredMethod, val)
-                })
-                .width(Length::Shrink),
-            ),
+    let pref_row = ui::centered_hbox(8);
+    pref_row.append(&ui::caption(&fl!("contacts-preferred-label")));
+    let pref_dd = ui::dropdown_with_signal(
+        &pref_labels,
+        pref_selected,
+        move |idx| {
+            let val = index_to_preferred(idx).unwrap_or_default();
+            Message::SetContactField(index, ContactField::PreferredMethod, val)
+        },
+        sender,
     );
+    pref_row.append(&pref_dd);
+    col.append(&pref_row);
 
     // Groups text input (comma-separated)
     let groups_val = contact.groups.join(", ");
-    col = col.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(text::caption(fl!("contacts-groups")))
-            .push(
-                text_input::text_input(fl!("contacts-groups-placeholder"), groups_val)
-                    .on_input(move |v| {
-                        let groups: Vec<String> = v.split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        Message::SetContactGroups(index, groups)
-                    })
-                    .on_submit(move |_| Message::FlipContact(index))
-                    .width(Length::Fill),
-            ),
-    );
+    let groups_row = ui::centered_hbox(8);
+    groups_row.append(&ui::caption(&fl!("contacts-groups")));
+    let groups_entry = ui::entry(&fl!("contacts-groups-placeholder"), &groups_val);
+    {
+        let s = sender.clone();
+        groups_entry.connect_changed(move |e| {
+            let groups: Vec<String> = e.text().to_string()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            s.emit(Message::SetContactGroups(index, groups));
+        });
+    }
+    {
+        let s = sender.clone();
+        groups_entry.connect_activate(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+    }
+    groups_row.append(&groups_entry);
+    col.append(&groups_row);
 
-    col.into()
+    col
 }
 
 fn contact_card(
@@ -217,97 +232,114 @@ fn contact_card(
     is_flipped: bool,
     is_editing: bool,
     confirming_delete: bool,
-) -> Element<'static, Message> {
-    let inner: Element<'static, Message> = if is_flipped && is_editing {
-        card_edit(contact, index)
+    sender: &Sender,
+) -> gtk::Widget {
+    let inner: gtk::Box = if is_flipped && is_editing {
+        card_edit(contact, index, sender)
     } else if is_flipped {
-        card_back(contact, index, confirming_delete)
+        card_back(contact, index, confirming_delete, sender)
     } else {
         card_front(contact)
     };
 
-    let card_body = container(inner)
-        .padding(12)
-        .width(Length::Fixed(CARD_WIDTH))
-        .class(theme::Container::Card);
+    let frame = gtk::Frame::new(None);
+    inner.set_margin_start(12);
+    inner.set_margin_end(12);
+    inner.set_margin_top(12);
+    inner.set_margin_bottom(12);
+    inner.set_width_request(280);
+    frame.set_child(Some(&inner));
+    frame.add_css_class("card");
 
     if is_editing {
-        // In edit mode, don't wrap in a clickable button — inputs need focus
-        card_body.into()
+        // In edit mode, don't wrap in clickable button -- inputs need focus
+        frame.upcast()
     } else {
-        button::custom(card_body)
-            .padding(0)
-            .class(theme::Button::Text)
-            .on_press(Message::FlipContact(index))
-            .into()
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&frame));
+        btn.add_css_class("flat");
+        let s = sender.clone();
+        btn.connect_clicked(move |_| {
+            s.emit(Message::FlipContact(index));
+        });
+        btn.upcast()
     }
 }
 
 fn card_grid(
-    contacts: &[(usize, &Contact)],
+    contacts: &[&Contact],
+    indices: &[usize],
     flipped: &HashSet<usize>,
     editing: Option<usize>,
     pending_delete: Option<usize>,
-) -> Element<'static, Message> {
-    let cards: Vec<Element<'static, Message>> = contacts
-        .iter()
-        .map(|(idx, c)| {
-            contact_card(
-                c,
-                *idx,
-                flipped.contains(idx),
-                editing == Some(*idx),
-                pending_delete == Some(*idx),
-            )
-        })
-        .collect();
+    sender: &Sender,
+) -> gtk::FlowBox {
+    let flow = gtk::FlowBox::new();
+    flow.set_selection_mode(gtk::SelectionMode::None);
+    flow.set_homogeneous(false);
+    flow.set_row_spacing(12);
+    flow.set_column_spacing(12);
+    flow.set_max_children_per_line(10);
+    flow.set_min_children_per_line(1);
 
-    flex_row(cards)
-        .row_spacing(12)
-        .column_spacing(12)
-        .into()
+    for (contact, idx) in contacts.iter().zip(indices.iter()) {
+        let card = contact_card(
+            contact,
+            *idx,
+            flipped.contains(idx),
+            editing == Some(*idx),
+            pending_delete == Some(*idx),
+            sender,
+        );
+        flow.insert(&card, -1);
+    }
+
+    flow
 }
 
 pub fn contacts_view(
-    contacts: &[(usize, &Contact)],
+    contacts: &[Contact],
     contact_input: &str,
     flipped: &HashSet<usize>,
     editing: Option<usize>,
     pending_delete: Option<usize>,
-) -> Element<'static, Message> {
-    let mut content = column().spacing(12);
+    sender: &Sender,
+) -> gtk::Widget {
+    let content = ui::vbox(12);
 
     // Add contact input row
-    let input = text_input::text_input(fl!("contacts-placeholder"), contact_input.to_string())
-        .on_input(Message::ContactInputChanged)
-        .on_submit(|_| Message::ContactSubmit)
-        .width(Length::Fill);
-
-    content = content.push(
-        row()
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .push(input)
-            .push(
-                button::icon(icon::from_name("list-add-symbolic"))
-                    .on_press(Message::ContactSubmit),
-            ),
-    );
+    let input_row = ui::centered_hbox(8);
+    let entry = ui::entry(&fl!("contacts-placeholder"), contact_input);
+    {
+        let s = sender.clone();
+        entry.connect_changed(move |e| {
+            s.emit(Message::ContactInputChanged(e.text().to_string()));
+        });
+    }
+    {
+        let s = sender.clone();
+        entry.connect_activate(move |_| {
+            s.emit(Message::ContactSubmit);
+        });
+    }
+    input_row.append(&entry);
+    input_row.append(&ui::icon_button_with_signal("list-add-symbolic", Message::ContactSubmit, sender));
+    content.append(&input_row);
 
     if contacts.is_empty() {
-        content = content.push(
-            container(text::body(fl!("contacts-empty")))
-                .padding(32)
-                .center_x(Length::Fill)
-                .width(Length::Fill),
-        );
+        let empty_label = ui::body(&fl!("contacts-empty"));
+        empty_label.set_halign(gtk::Align::Center);
+        empty_label.set_margin_top(32);
+        empty_label.set_margin_bottom(32);
+        empty_label.set_hexpand(true);
+        content.append(&empty_label);
     } else {
-        // Groups to hide from the UI — contacts only in these groups are not shown
+        // Groups to hide from the UI
         const HIDDEN_GROUPS: &[&str] = &["Personal", "archive", "Autosaved"];
 
         // Group contacts by their visible groups only
         let mut by_group: BTreeMap<String, Vec<(usize, &Contact)>> = BTreeMap::new();
-        for &(idx, contact) in contacts {
+        for (idx, contact) in contacts.iter().enumerate() {
             for group in &contact.groups {
                 if !HIDDEN_GROUPS.iter().any(|h| group.eq_ignore_ascii_case(h)) {
                     by_group.entry(group.clone())
@@ -318,13 +350,12 @@ pub fn contacts_view(
         }
 
         for (group_name, group_contacts) in &by_group {
-            content = content.push(text::title4(group_name.clone()));
-            content = content.push(card_grid(group_contacts, flipped, editing, pending_delete));
+            content.append(&ui::title4(group_name));
+            let group_c: Vec<&Contact> = group_contacts.iter().map(|(_, c)| *c).collect();
+            let group_i: Vec<usize> = group_contacts.iter().map(|(i, _)| *i).collect();
+            content.append(&card_grid(&group_c, &group_i, flipped, editing, pending_delete, sender));
         }
     }
 
-    container(scrollable(content.padding(16).width(Length::Fill)))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }

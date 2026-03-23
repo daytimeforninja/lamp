@@ -186,8 +186,11 @@ class SyncEngine @Inject constructor(
                 try {
                     client.syncCollection(taskCalendar.href, syncToken).getOrThrow()
                 } catch (_: SyncTokenExpiredException) {
+                    Log.w("LampSync", "Sync token expired, doing full listing")
                     val vtodos = client.listVtodos(taskCalendar.href).getOrThrow()
-                    vtodos.map { SyncChange.Changed(it) } to null
+                    // Get a fresh sync token for next time
+                    val freshToken = client.getSyncToken(taskCalendar.href)
+                    vtodos.map { SyncChange.Changed(it) } to freshToken
                 }
             } else {
                 val vtodos = client.listVtodos(taskCalendar.href).getOrThrow()
@@ -207,16 +210,25 @@ class SyncEngine @Inject constructor(
 
                         val localTask = taskRepo.getByHref(change.vtodo.href)
                         if (localTask != null) {
+                            // Merge local fields that remote may not have
+                            val merged = remoteWithSync.copy(
+                                id = localTask.id,
+                                project = remoteWithSync.project ?: localTask.project,
+                                extraTags = if (remoteWithSync.extraTags.isEmpty()) localTask.extraTags
+                                            else (remoteWithSync.extraTags + localTask.extraTags).distinct(),
+                                logbookEntries = (remoteWithSync.logbookEntries + localTask.logbookEntries).distinct().sorted(),
+                                clockEntries = (remoteWithSync.clockEntries + localTask.clockEntries).distinct(),
+                            )
                             // Check if local was modified
                             val localHash = VtodoConverter.taskContentHash(localTask)
                             if (localHash == localTask.syncHash) {
-                                // Local unchanged, take remote
-                                taskRepo.save(remoteWithSync.copy(id = localTask.id), markDirty = false)
+                                // Local unchanged, take remote (with merged local fields)
+                                taskRepo.save(merged, markDirty = false)
                             } else {
                                 // Both changed: produce conflict for user resolution
                                 conflicts.add(SyncConflict.StateMismatch(
                                     localTask = localTask,
-                                    remoteTask = remoteWithSync,
+                                    remoteTask = merged,
                                 ))
                             }
                         } else {
@@ -307,7 +319,8 @@ class SyncEngine @Inject constructor(
 
         val existing = dayPlanRepo.getByDate(today)
             ?: com.lamp.mobile.core.model.DayPlan(date = today)
-        val mergedIds = (existing.confirmedTaskIds + dayplanTaskIds).distinct()
+        // Remote plan exists — use it as source of truth
+        val mergedIds = dayplanTaskIds.distinct()
         if (mergedIds != existing.confirmedTaskIds) {
             Log.d("LampSync", "Reconstructed day plan: ${mergedIds.size} tasks")
             dayPlanRepo.save(existing.copy(confirmedTaskIds = mergedIds))
@@ -421,8 +434,10 @@ class SyncEngine @Inject constructor(
             val localByFilename = localNotes.associateBy { "${it.id}.org" }
             var synced = 0
 
-            // Pull from remote
+            // Pull from remote (skip non-UUID filenames like shopping.org, accounts.org)
             for (file in remoteFiles) {
+                val stem = file.filename.removeSuffix(".org")
+                try { java.util.UUID.fromString(stem) } catch (_: Exception) { continue }
                 val localNote = localByFilename[file.filename]
                 if (localNote != null && localNote.syncEtag == file.etag) {
                     continue // No change
@@ -430,14 +445,24 @@ class SyncEngine @Inject constructor(
                 val (content, etag) = client.getFile(file.filename).getOrThrow()
                 // Simple: store raw content as note body
                 if (localNote != null) {
-                    noteRepo.save(localNote.copy(body = content, syncEtag = etag))
+                    val updatedTitle = content.lines()
+                        .firstOrNull { it.startsWith("#+TITLE:") }
+                        ?.substringAfter("#+TITLE:")
+                        ?.trim()
+                        ?: localNote.title
+                    noteRepo.save(localNote.copy(title = updatedTitle, body = content, syncEtag = etag))
                 } else {
                     val id = try {
                         java.util.UUID.fromString(file.filename.removeSuffix(".org"))
                     } catch (_: Exception) { java.util.UUID.randomUUID() }
+                    val title = content.lines()
+                        .firstOrNull { it.startsWith("#+TITLE:") }
+                        ?.substringAfter("#+TITLE:")
+                        ?.trim()
+                        ?: file.filename.removeSuffix(".org")
                     noteRepo.save(com.lamp.mobile.core.model.Note(
                         id = id,
-                        title = file.filename.removeSuffix(".org"),
+                        title = title,
                         body = content,
                         syncEtag = etag,
                     ))
@@ -473,8 +498,12 @@ class SyncEngine @Inject constructor(
             val localShopping = listItemRepo.getByKind(ListKind.SHOPPING)
             val remoteShopping = try {
                 val (content, _) = client.getFile("shopping.org").getOrThrow()
+                Log.d("SyncEngine", "GET shopping.org (${content.length} bytes): ${content.take(200)}")
                 OrgSerializer.parseShoppingItems(content)
-            } catch (_: Exception) { emptyList() }
+            } catch (e: Exception) {
+                Log.d("SyncEngine", "GET shopping.org failed: ${e.message}")
+                emptyList()
+            }
 
             // Merge: remote wins for matching UUIDs, keep local-only items
             val remoteIds = remoteShopping.map { it.id }.toSet()
@@ -498,11 +527,17 @@ class SyncEngine @Inject constructor(
                 }
             }
 
-            // Push merged back to remote
-            val mergedContent = OrgSerializer.writeShoppingFile(merged)
-            client.putFile("shopping.org", mergedContent).getOrNull()
+            // Push merged result if content differs from remote
+            if (merged.isNotEmpty()) {
+                val mergedContent = OrgSerializer.writeShoppingFile(merged)
+                val remoteContent = OrgSerializer.writeShoppingFile(remoteShopping)
+                if (mergedContent != remoteContent) {
+                    Log.d("SyncEngine", "Pushing shopping.org (${mergedContent.length} bytes)")
+                    client.putFile("shopping.org", mergedContent).getOrNull()
+                }
+            }
 
-            Log.i("SyncEngine", "Shopping sync: ${remoteShopping.size} remote, ${merged.size} merged")
+            Log.i("SyncEngine", "Shopping sync: ${remoteShopping.size} remote, ${localShopping.size} local, ${merged.size} merged")
 
             // Sync accounts
             val localAccounts = accountRepo.getAll()
@@ -529,8 +564,13 @@ class SyncEngine @Inject constructor(
                 }
             }
 
-            val mergedAccountsContent = OrgSerializer.writeAccountsFile(mergedAccounts)
-            client.putFile("accounts.org", mergedAccountsContent).getOrNull()
+            if (mergedAccounts.isNotEmpty()) {
+                val mergedAccountsContent = OrgSerializer.writeAccountsFile(mergedAccounts)
+                val remoteAccountsContent = OrgSerializer.writeAccountsFile(remoteAccounts)
+                if (mergedAccountsContent != remoteAccountsContent) {
+                    client.putFile("accounts.org", mergedAccountsContent).getOrNull()
+                }
+            }
 
             Log.i("SyncEngine", "Accounts sync: ${remoteAccounts.size} remote, ${mergedAccounts.size} merged")
         } finally {

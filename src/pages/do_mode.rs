@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDateTime;
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
-use cosmic::Element;
+use relm4::gtk;
+use relm4::gtk::prelude::*;
+use uuid::Uuid;
 
 use crate::core::day_plan::DayPlan;
 use crate::core::habit::Habit;
@@ -11,6 +11,7 @@ use crate::core::list_item::ListItem;
 use crate::core::task::Task;
 use crate::fl;
 use crate::message::Message;
+use crate::ui::{self, Sender};
 
 fn format_duration(secs: i64) -> String {
     let h = secs / 3600;
@@ -23,35 +24,28 @@ fn format_duration(secs: i64) -> String {
     }
 }
 
-pub fn do_mode_view<'a>(
+pub fn do_mode_view(
     day_plan: &Option<DayPlan>,
     all_tasks: &[Task],
     habits: &[Habit],
     media_items: &[ListItem],
-    shopping_items: &[ListItem],
-    expanded_task: Option<uuid::Uuid>,
-    note_inputs: &HashMap<uuid::Uuid, String>,
-    active_timer: Option<(uuid::Uuid, NaiveDateTime)>,
-) -> Element<'a, Message> {
+    shopping_tasks: &[Task],
+    expanded_task: Option<Uuid>,
+    note_inputs: &HashMap<Uuid, String>,
+    active_timer: Option<(Uuid, NaiveDateTime)>,
+    sender: &Sender,
+) -> gtk::Widget {
     let today = chrono::Local::now().date_naive();
     let now = chrono::Local::now().naive_local();
 
     let Some(plan) = day_plan else {
-        return container(
-            column()
-                .spacing(12)
-                .push(text::title3(fl!("do-empty")))
-                .align_x(Alignment::Center)
-                .width(Length::Fill),
-        )
-        .center(Length::Fill)
-        .into();
+        return ui::status_page("media-playback-start-symbolic", &fl!("do-empty"), "Plan your day first, then switch to Do mode").upcast();
     };
 
     let remaining = plan.remaining_budget();
     let budget = plan.spoon_budget;
 
-    let mut content = column().spacing(24).padding(16).width(Length::Fill);
+    let content = ui::vbox(24);
 
     // Spoon meter
     let meter_text = fl!(
@@ -59,7 +53,7 @@ pub fn do_mode_view<'a>(
         remaining = remaining.to_string(),
         budget = budget.to_string()
     );
-    content = content.push(text::title3(meter_text));
+    content.append(&ui::title3(&meter_text));
 
     // Tasks section — active confirmed tasks (sorted by ESC ascending, None last)
     let mut confirmed_tasks: Vec<&Task> = plan
@@ -72,8 +66,8 @@ pub fn do_mode_view<'a>(
     let has_completed = !plan.completed_tasks.is_empty();
 
     if !confirmed_tasks.is_empty() || has_completed {
-        content = content.push(text::title4(fl!("do-tasks")));
-        let mut tasks_col = column().spacing(4);
+        content.append(&ui::title4(&fl!("do-tasks")));
+        let tasks_col = ui::vbox(4);
 
         // Active tasks
         for task in &confirmed_tasks {
@@ -98,13 +92,11 @@ pub fn do_mode_view<'a>(
                 format!("{}{}", task.title, esc_text)
             };
 
-            let mut r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(
-                    checkbox("", false)
-                        .on_toggle(move |_| Message::DoMarkDone(id)),
-                );
+            let r = ui::centered_hbox(8);
+
+            // Checkbox
+            let cb = ui::check_button_with_signal(false, Message::DoMarkDone(id), sender);
+            r.append(&cb);
 
             // Play/stop timer button
             let timer_icon_name = if is_active {
@@ -112,61 +104,61 @@ pub fn do_mode_view<'a>(
             } else {
                 "media-playback-start-symbolic"
             };
-            let timer_btn = button::icon(
-                cosmic::widget::icon::from_name(timer_icon_name),
-            )
-            .on_press(Message::ToggleWorkTimer(id));
-            r = r.push(timer_btn);
+            let timer_btn = ui::icon_button_with_signal(timer_icon_name, Message::ToggleWorkTimer(id), sender);
+            r.append(&timer_btn);
 
             // Task title
-            let title_widget = if is_active {
-                text::body(title_text).width(Length::Fill)
-            } else {
-                text::body(title_text).width(Length::Fill)
-            };
-            r = r.push(title_widget);
+            let title_widget = ui::body(&title_text);
+            title_widget.set_hexpand(true);
+            r.append(&title_widget);
 
             // Show total tracked time if any
             if total_secs > 0 {
-                r = r.push(cosmic::widget::horizontal_space());
-                r = r.push(text::caption(format_duration(total_secs)));
-            } else {
-                r = r.push(cosmic::widget::horizontal_space());
+                r.append(&ui::caption(&format_duration(total_secs)));
             }
 
-            r = r.push(
-                button::icon(cosmic::widget::icon::from_name("accessories-text-editor-symbolic"))
-                    .on_press(Message::ToggleTaskExpand(id)),
+            // Expand/notes button
+            let expand_btn = ui::icon_button_with_signal(
+                "accessories-text-editor-symbolic",
+                Message::ToggleTaskExpand(id),
+                sender,
             );
+            r.append(&expand_btn);
 
-            let mut task_col = column().spacing(4);
-            task_col = task_col.push(r);
+            let task_col = ui::vbox(4);
+            task_col.append(&r);
 
             if expanded_task == Some(id) {
-                let mut notes_col = column().spacing(4).padding([4, 0, 4, 36]);
+                let notes_col = ui::vbox(4);
+                notes_col.set_margin_start(36);
+                notes_col.set_margin_top(4);
+                notes_col.set_margin_bottom(4);
 
                 if !task.notes.is_empty() {
-                    notes_col = notes_col.push(
-                        container(text::body(task.notes.clone()))
-                            .padding([4, 8])
-                            .width(Length::Fill),
-                    );
+                    let notes_label = ui::body(&task.notes);
+                    notes_label.set_hexpand(true);
+                    notes_label.set_margin_start(8);
+                    notes_label.set_margin_end(8);
+                    notes_col.append(&notes_label);
                 }
 
                 let input_value = note_inputs.get(&id).cloned().unwrap_or_default();
-                let note_input = text_input::text_input(fl!("task-note-placeholder"), input_value)
-                    .on_input(move |v| Message::NoteInputChanged(id, v))
-                    .on_submit(move |_| Message::AppendNote(id))
-                    .width(Length::Fill);
-                notes_col = notes_col.push(note_input);
+                let note_input = ui::entry_with_signal(
+                    &fl!("task-note-placeholder"),
+                    &input_value,
+                    move |v| Message::NoteInputChanged(id, v),
+                    Some(Box::new(move || Message::AppendNote(id))),
+                    sender,
+                );
+                notes_col.append(&note_input);
 
-                task_col = task_col.push(notes_col);
+                task_col.append(&notes_col);
             }
 
-            tasks_col = tasks_col.push(task_col);
+            tasks_col.append(&task_col);
         }
 
-        // Completed tasks (shown as checked, clickable to un-complete)
+        // Completed tasks (shown as checked)
         for ct in &plan.completed_tasks {
             let id = ct.id;
             let esc_text = ct.esc.map(|e| format!(" [{}]", e)).unwrap_or_default();
@@ -183,39 +175,51 @@ pub fn do_mode_view<'a>(
                 String::new()
             };
 
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(
-                    checkbox("", true)
-                        .on_toggle(move |_| Message::DoMarkDone(id)),
-                )
-                .push(text::caption(format!("{}{}{}", ct.title, esc_text, time_text)).width(Length::Fill));
-            tasks_col = tasks_col.push(r);
+            let r = ui::centered_hbox(8);
+            let cb = ui::check_button_with_signal(true, Message::DoMarkDone(id), sender);
+            r.append(&cb);
+
+            let lbl = ui::caption(&format!("{}{}{}", ct.title, esc_text, time_text));
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+
+            tasks_col.append(&r);
         }
 
-        content = content.push(tasks_col);
+        content.append(&tasks_col);
     }
 
-    // Habits section — show all due (incomplete today) habits
+    // Habits section — show due + completed-today habits
     let due_habits: Vec<&Habit> = habits.iter().filter(|h| h.is_due(today)).collect();
+    let done_habits: Vec<&Habit> = habits.iter().filter(|h| {
+        !h.is_due(today) && h.completions.iter().any(|c| c.date() == today)
+    }).collect();
 
-    if !due_habits.is_empty() {
-        content = content.push(text::title4(fl!("do-habits")));
-        let mut habits_col = column().spacing(4);
+    if !due_habits.is_empty() || !done_habits.is_empty() {
+        content.append(&ui::title4(&fl!("do-habits")));
+        let habits_col = ui::vbox(4);
         for habit in &due_habits {
             let id = habit.task.id;
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(
-                    checkbox("", false)
-                        .on_toggle(move |_| Message::CompleteHabit(id)),
-                )
-                .push(text::body(habit.task.title.clone()).width(Length::Fill));
-            habits_col = habits_col.push(r);
+            let r = ui::centered_hbox(8);
+            let cb = ui::check_button_with_signal(false, Message::CompleteHabit(id), sender);
+            r.append(&cb);
+            let lbl = ui::body(&habit.task.title);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+            habits_col.append(&r);
         }
-        content = content.push(habits_col);
+        for habit in &done_habits {
+            let r = ui::centered_hbox(8);
+            let cb = gtk::CheckButton::new();
+            cb.set_active(true);
+            cb.set_sensitive(false);
+            r.append(&cb);
+            let lbl = ui::caption(&habit.task.title);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+            habits_col.append(&r);
+        }
+        content.append(&habits_col);
     }
 
     // Media items section
@@ -226,55 +230,49 @@ pub fn do_mode_view<'a>(
         .collect();
 
     if !picked_media.is_empty() {
-        content = content.push(text::title4(fl!("do-media")));
-        let mut media_col = column().spacing(4);
+        content.append(&ui::title4(&fl!("do-media")));
+        let media_col = ui::vbox(4);
         for item in &picked_media {
             let id = item.id;
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(
-                    checkbox("", false)
-                        .on_toggle(move |_| Message::DoMarkListItemDone(id)),
-                )
-                .push(text::body(item.title.clone()).width(Length::Fill));
-            media_col = media_col.push(r);
+            let r = ui::centered_hbox(8);
+            let cb = ui::check_button_with_signal(false, Message::DoMarkListItemDone(id), sender);
+            r.append(&cb);
+            let lbl = ui::body(&item.title);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+            media_col.append(&r);
         }
-        content = content.push(media_col);
+        content.append(&media_col);
     }
 
-    // Shopping items section
-    let picked_shopping: Vec<&ListItem> = plan
+    // Shopping tasks section
+    let picked_shopping: Vec<&Task> = plan
         .picked_shopping_ids
         .iter()
-        .filter_map(|id| shopping_items.iter().find(|i| i.id == *id))
+        .filter_map(|id| shopping_tasks.iter().find(|t| t.id == *id))
+        .filter(|t| !t.state.is_done())
         .collect();
 
     if !picked_shopping.is_empty() {
-        content = content.push(text::title4(fl!("do-shopping")));
-        let mut shopping_col = column().spacing(4);
-        for item in &picked_shopping {
-            let id = item.id;
-            let r = row()
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .push(
-                    checkbox("", false)
-                        .on_toggle(move |_| Message::DoMarkListItemDone(id)),
-                )
-                .push(text::body(item.title.clone()).width(Length::Fill));
-            shopping_col = shopping_col.push(r);
+        content.append(&ui::title4(&fl!("do-shopping")));
+        let shopping_col = ui::vbox(4);
+        for task in &picked_shopping {
+            let id = task.id;
+            let r = ui::centered_hbox(8);
+            let cb = ui::check_button_with_signal(false, Message::DoMarkListItemDone(id), sender);
+            r.append(&cb);
+            let lbl = ui::body(&task.title);
+            lbl.set_hexpand(true);
+            r.append(&lbl);
+            shopping_col.append(&r);
         }
-        content = content.push(shopping_col);
+        content.append(&shopping_col);
     }
 
     // Empty state if no items at all
     if confirmed_tasks.is_empty() && due_habits.is_empty() && picked_media.is_empty() && picked_shopping.is_empty() {
-        content = content.push(text::body(fl!("do-plan-empty")));
+        content.append(&ui::status_page("media-playback-start-symbolic", &fl!("do-plan-empty"), "Add tasks to your day plan to see them here"));
     }
 
-    container(scrollable(content))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    ui::page_wrapper(&content).upcast()
 }
