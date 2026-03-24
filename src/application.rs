@@ -402,16 +402,12 @@ impl Component for Lamp {
         sidebar.set_selection_mode(gtk::SelectionMode::Single);
         sidebar.add_css_class("navigation-sidebar");
 
-        // Build a mapping from row index to page (separators shift indices)
-        let mut row_to_page: Vec<WhatPage> = Vec::new();
-        for (i, page) in WhatPage::ALL.iter().enumerate() {
-            if WhatPage::SECTION_STARTS.contains(page) && i > 0 {
-                let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-                sep.set_margin_top(6);
-                sep.set_margin_bottom(6);
-                sidebar.append(&sep);
-            }
+        // Store page index on each row via widget_name; use header_func for separators
+        let pages = WhatPage::ALL;
+        for (i, page) in pages.iter().enumerate() {
             let row = gtk::ListBoxRow::new();
+            // Tag the row with its page index so we can look it up on selection
+            row.set_widget_name(&format!("page-{}", i));
             let hbox = ui::hbox(8);
             hbox.set_margin_start(8);
             hbox.set_margin_end(8);
@@ -425,23 +421,37 @@ impl Component for Lamp {
             hbox.append(&label);
             row.set_child(Some(&hbox));
             sidebar.append(&row);
-            row_to_page.push(*page);
         }
+
+        // Add section dividers via header_func (doesn't create extra rows)
+        sidebar.set_header_func(|row, _before| {
+            let name = row.widget_name();
+            if let Some(idx_str) = name.strip_prefix("page-") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    let page = WhatPage::ALL[idx];
+                    if WhatPage::SECTION_STARTS.contains(&page) && idx > 0 {
+                        let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+                        sep.set_margin_top(6);
+                        sep.set_margin_bottom(6);
+                        row.set_header(Some(&sep));
+                        return;
+                    }
+                }
+            }
+            row.set_header(gtk::Widget::NONE);
+        });
 
         {
             let s = sender.input_sender().clone();
-            sidebar.connect_row_selected(move |listbox, row| {
+            sidebar.connect_row_selected(move |_, row| {
                 if let Some(row) = row {
-                    // Count only selectable rows (skip separators) up to this one
-                    let mut page_idx = 0;
-                    let mut i = 0;
-                    while let Some(r) = listbox.row_at_index(i) {
-                        if r == *row { break; }
-                        if r.is_selectable() { page_idx += 1; }
-                        i += 1;
-                    }
-                    if page_idx < row_to_page.len() {
-                        s.emit(Message::NavigateTo(row_to_page[page_idx]));
+                    let name = row.widget_name();
+                    if let Some(idx_str) = name.strip_prefix("page-") {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            if idx < pages.len() {
+                                s.emit(Message::NavigateTo(pages[idx]));
+                            }
+                        }
                     }
                 }
             });
