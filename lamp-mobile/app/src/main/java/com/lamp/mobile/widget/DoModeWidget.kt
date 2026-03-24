@@ -78,9 +78,14 @@ class DoModeWidget : AppWidgetProvider() {
                     db.execSQL("ALTER TABLE tasks ADD COLUMN clockEntries TEXT NOT NULL DEFAULT '[]'")
                 }
             }
+            val migration8to9 = object : Migration(8, 9) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE tasks ADD COLUMN dayplanBudget INTEGER")
+                }
+            }
             return Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
                 .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
-                .addMigrations(migration5to6, migration6to7, migration7to8)
+                .addMigrations(migration5to6, migration6to7, migration7to8, migration8to9)
                 .enableMultiInstanceInvalidation()
                 .build()
         }

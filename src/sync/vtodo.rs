@@ -129,9 +129,13 @@ pub fn task_to_vcalendar(task: &Task) -> String {
         ));
     }
 
-    // X-LAMP-DAYPLAN (day plan date)
+    // X-LAMP-DAYPLAN (day plan date, optionally with budget)
     if let Some(dayplan) = task.dayplan_date {
-        lines.push(format!("X-LAMP-DAYPLAN:{}", format_date(dayplan)));
+        if let Some(budget) = task.dayplan_budget {
+            lines.push(format!("X-LAMP-DAYPLAN:{};BUDGET={}", format_date(dayplan), budget));
+        } else {
+            lines.push(format!("X-LAMP-DAYPLAN:{}", format_date(dayplan)));
+        }
     }
 
     // X-LAMP-LOGBOOK (habit completion timestamps)
@@ -190,6 +194,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
     let mut lamp_clock: Option<String> = None;
     let mut lamp_tags: Option<String> = None;
     let mut lamp_dayplan: Option<NaiveDate> = None;
+    let mut lamp_dayplan_budget: Option<u32> = None;
 
     for line in unfolded.lines() {
         let line = line.trim_end();
@@ -234,7 +239,17 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
                 "X-LAMP-LOGBOOK" => lamp_logbook = Some(value.to_string()),
                 "X-LAMP-CLOCK" => lamp_clock = Some(value.to_string()),
                 "X-LAMP-TAGS" => lamp_tags = Some(value.to_string()),
-                "X-LAMP-DAYPLAN" => lamp_dayplan = parse_ical_date(value),
+                "X-LAMP-DAYPLAN" => {
+                    // Format: "20260324" or "20260324;BUDGET=50"
+                    if let Some((date_part, params)) = value.split_once(';') {
+                        lamp_dayplan = parse_ical_date(date_part);
+                        if let Some(budget_str) = params.strip_prefix("BUDGET=") {
+                            lamp_dayplan_budget = budget_str.parse().ok();
+                        }
+                    } else {
+                        lamp_dayplan = parse_ical_date(value);
+                    }
+                }
                 _ => {}
             }
         }
@@ -290,6 +305,7 @@ pub fn vcalendar_to_task(ical: &str) -> Option<Task> {
         scheduled_time: None,
         deadline_time: None,
         dayplan_date: lamp_dayplan,
+        dayplan_budget: lamp_dayplan_budget,
         logbook_entries: lamp_logbook
             .map(|s| {
                 s.split(',')
@@ -353,6 +369,11 @@ pub fn task_content_hash(task: &Task) -> u64 {
         hasher.write(start.format("%Y-%m-%dT%H:%M:%S").to_string().as_bytes());
         hasher.write(end.format("%Y-%m-%dT%H:%M:%S").to_string().as_bytes());
     }
+    // Include dayplan fields so confirming/unconfirming a task triggers sync push
+    write_optional_string(&mut hasher, task.dayplan_date.map(|d| d.to_string()).as_deref());
+    write_optional_int(&mut hasher, task.dayplan_budget);
+    // Include completed so completion timestamp changes trigger sync
+    write_optional_string(&mut hasher, task.completed.map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string()).as_deref());
     hasher.finish()
 }
 

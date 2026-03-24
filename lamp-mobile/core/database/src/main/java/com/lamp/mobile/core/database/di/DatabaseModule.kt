@@ -37,12 +37,18 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN dayplanBudget INTEGER")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): LampDatabase =
         Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
             .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
-            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .enableMultiInstanceInvalidation()
             .build()
 

@@ -27,6 +27,7 @@ data class Task(
     val logbookEntries: List<LocalDateTime> = emptyList(),
     val clockEntries: List<Pair<LocalDateTime, LocalDateTime>> = emptyList(),
     val dayplanDate: LocalDate? = null,
+    val dayplanBudget: Int? = null,
     val syncHref: String? = null,
     val syncHash: Long? = null,
     val syncUid: String? = null,

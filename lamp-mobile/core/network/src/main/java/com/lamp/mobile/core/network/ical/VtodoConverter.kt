@@ -99,7 +99,14 @@ object VtodoConverter {
         task.recurrence?.let { lines.add("X-LAMP-RECURRENCE:$it") }
 
         // X-LAMP-DAYPLAN
-        task.dayplanDate?.let { lines.add("X-LAMP-DAYPLAN:${ICalHelpers.formatDate(it)}") }
+        task.dayplanDate?.let {
+            val dayplanLine = if (task.dayplanBudget != null) {
+                "X-LAMP-DAYPLAN:${ICalHelpers.formatDate(it)};BUDGET=${task.dayplanBudget}"
+            } else {
+                "X-LAMP-DAYPLAN:${ICalHelpers.formatDate(it)}"
+            }
+            lines.add(dayplanLine)
+        }
 
         // X-LAMP-TAGS (non-context tags like "habit")
         if (task.extraTags.isNotEmpty()) {
@@ -152,6 +159,7 @@ object VtodoConverter {
         var lampClock: String? = null
         var lampTags: String? = null
         var lampDayplan: LocalDate? = null
+        var dayplanBudget: Int? = null
 
         for (line in lines) {
             val trimmed = line.trim()
@@ -183,7 +191,18 @@ object VtodoConverter {
                 "X-LAMP-LOGBOOK" -> lampLogbook = value
                 "X-LAMP-CLOCK" -> lampClock = value
                 "X-LAMP-TAGS" -> lampTags = value
-                "X-LAMP-DAYPLAN" -> lampDayplan = ICalHelpers.parseIcalDate(value)
+                "X-LAMP-DAYPLAN" -> {
+                    if (';' in value) {
+                        val parts = value.split(";", limit = 2)
+                        lampDayplan = ICalHelpers.parseIcalDate(parts[0])
+                        val budgetPart = parts[1]
+                        if (budgetPart.startsWith("BUDGET=")) {
+                            dayplanBudget = budgetPart.removePrefix("BUDGET=").toIntOrNull()
+                        }
+                    } else {
+                        lampDayplan = ICalHelpers.parseIcalDate(value)
+                    }
+                }
             }
         }
 
@@ -249,6 +268,7 @@ object VtodoConverter {
                 }
                 ?: emptyList(),
             dayplanDate = lampDayplan,
+            dayplanBudget = dayplanBudget,
             syncUid = uid,
         )
     }
@@ -285,6 +305,9 @@ object VtodoConverter {
             hasher.writeString(start.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
             hasher.writeString(end.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
         }
+        // Include dayplanDate so confirming/unconfirming a task triggers sync push
+        hasher.writeOptionalString(task.dayplanDate?.format(DateTimeFormatter.ISO_LOCAL_DATE))
+        hasher.writeOptionalInt(task.dayplanBudget)
         return hasher.finish()
     }
 

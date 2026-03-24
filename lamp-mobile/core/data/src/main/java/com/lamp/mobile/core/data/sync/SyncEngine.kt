@@ -146,10 +146,23 @@ class SyncEngine @Inject constructor(
             var deleted = 0
             val conflicts = mutableListOf<SyncConflict>()
 
-            // Push dirty tasks
+            // Push dirty tasks — stamp dayplanBudget on the first confirmed task (matching desktop)
             val dirtyTasks = taskRepo.getDirty()
+            val today = LocalDate.now()
+            val dayPlan = dayPlanRepo.getByDate(today)
+            var firstConfirmed = true
             for (task in dirtyTasks) {
-                val ical = VtodoConverter.taskToVcalendar(task)
+                val stamped = if (task.dayplanDate == today && dayPlan != null) {
+                    if (firstConfirmed) {
+                        firstConfirmed = false
+                        task.copy(dayplanBudget = dayPlan.spoonBudget)
+                    } else {
+                        task.copy(dayplanBudget = null)
+                    }
+                } else {
+                    task
+                }
+                val ical = VtodoConverter.taskToVcalendar(stamped)
                 val href = task.syncHref ?: VtodoConverter.vtodoHref(taskCalendar.href, task.syncUid ?: task.id.toString())
                 val condition = if (task.syncHref == null) PutCondition.CREATE_ONLY else PutCondition.UNCONDITIONAL
                 val etag = if (task.syncEtag != null) task.syncEtag else null
@@ -312,18 +325,24 @@ class SyncEngine @Inject constructor(
     private suspend fun reconstructDayPlan() {
         val today = LocalDate.now()
         val allTasks = taskRepo.getAll()
-        val dayplanTaskIds = allTasks
-            .filter { it.dayplanDate == today }
-            .map { it.id }
+        val dayplanTasks = allTasks.filter { it.dayplanDate == today }
+        val dayplanTaskIds = dayplanTasks.map { it.id }
         if (dayplanTaskIds.isEmpty()) return
 
         val existing = dayPlanRepo.getByDate(today)
             ?: com.lamp.mobile.core.model.DayPlan(date = today)
         // Remote plan exists — use it as source of truth
         val mergedIds = dayplanTaskIds.distinct()
-        if (mergedIds != existing.confirmedTaskIds) {
-            Log.d("LampSync", "Reconstructed day plan: ${mergedIds.size} tasks")
-            dayPlanRepo.save(existing.copy(confirmedTaskIds = mergedIds))
+        // Extract budget from the first task that carries it (matching desktop behavior)
+        val remoteBudget = dayplanTasks.firstNotNullOfOrNull { it.dayplanBudget }
+        val updatedPlan = if (remoteBudget != null) {
+            existing.copy(confirmedTaskIds = mergedIds, spoonBudget = remoteBudget)
+        } else {
+            existing.copy(confirmedTaskIds = mergedIds)
+        }
+        if (updatedPlan != existing) {
+            Log.d("LampSync", "Reconstructed day plan: ${mergedIds.size} tasks, budget=${remoteBudget ?: existing.spoonBudget}")
+            dayPlanRepo.save(updatedPlan)
         }
     }
 

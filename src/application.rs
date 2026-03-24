@@ -547,14 +547,11 @@ impl Component for Lamp {
         }
         content_inner.append(&search_entry);
 
-        // Page content area — wrapped in AdwClamp for comfortable reading width
+        // Page content area
         let page_content = ui::vbox(0);
         page_content.set_vexpand(true);
         page_content.set_hexpand(true);
-        let clamp = adw::Clamp::new();
-        clamp.set_maximum_size(900);
-        clamp.set_child(Some(&page_content));
-        let page_scroll = ui::scrolled(&clamp);
+        let page_scroll = ui::scrolled(&page_content);
         content_inner.append(&page_scroll);
 
         // Split view
@@ -1696,11 +1693,18 @@ impl Component for Lamp {
                     ops += 1;
                     let mut tasks: Vec<Task> = self.all_active_tasks();
                     if let Some(ref plan) = self.day_plan {
+                        let mut first_confirmed = true;
                         for task in &mut tasks {
                             if plan.confirmed_task_ids.contains(&task.id) {
                                 task.dayplan_date = Some(plan.date);
+                                // Stamp budget on the first confirmed task
+                                if first_confirmed {
+                                    task.dayplan_budget = Some(plan.spoon_budget);
+                                    first_confirmed = false;
+                                }
                             } else if task.dayplan_date.is_some() {
                                 task.dayplan_date = None;
+                                task.dayplan_budget = None;
                             }
                         }
                     }
@@ -2178,10 +2182,21 @@ impl Component for Lamp {
                         for project in &mut self.projects { project.tasks.retain(|t| !exclude.contains(&t.id)); }
                         let today = chrono::Local::now().date_naive();
                         let mut synced_plan_ids: Vec<uuid::Uuid> = Vec::new();
-                        for pulled in &sync_result.pulled { if pulled.dayplan_date == Some(today) { synced_plan_ids.push(pulled.id); } }
+                        let mut synced_budget: Option<u32> = None;
+                        for pulled in &sync_result.pulled {
+                            if pulled.dayplan_date == Some(today) {
+                                synced_plan_ids.push(pulled.id);
+                                if let Some(budget) = pulled.dayplan_budget {
+                                    synced_budget = Some(budget);
+                                }
+                            }
+                        }
                         if !synced_plan_ids.is_empty() {
                             let plan = self.ensure_day_plan();
-                            for id in synced_plan_ids { if !plan.confirmed_task_ids.contains(&id) { plan.confirmed_task_ids.push(id); } }
+                            for id in &synced_plan_ids { if !plan.confirmed_task_ids.contains(id) { plan.confirmed_task_ids.push(*id); } }
+                            if let Some(budget) = synced_budget {
+                                plan.spoon_budget = budget;
+                            }
                             self.save_day_plan();
                         }
                         for id in &sync_result.deleted_events { self.events.retain(|e| e.id != *id); }

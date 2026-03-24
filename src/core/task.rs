@@ -103,6 +103,8 @@ pub struct Task {
     pub clock_entries: Vec<(NaiveDateTime, NaiveDateTime)>,
     /// Date this task was added to the day plan (synced via X-LAMP-DAYPLAN).
     pub dayplan_date: Option<NaiveDate>,
+    /// Spoon budget for the day plan (synced via X-LAMP-DAYPLAN;BUDGET=N).
+    pub dayplan_budget: Option<u32>,
     pub sync_href: Option<String>,
     pub sync_hash: Option<u64>,
     /// Original CalDAV UID string (preserved for case-sensitive roundtrip)
@@ -136,6 +138,7 @@ impl Task {
             logbook_entries: Vec::new(),
             clock_entries: Vec::new(),
             dayplan_date: None,
+            dayplan_budget: None,
             sync_href: None,
             sync_hash: None,
             sync_uid: None,
