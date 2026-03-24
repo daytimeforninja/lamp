@@ -168,9 +168,6 @@ class CalDavClient(
                 PutCondition.CREATE_ONLY -> header(HttpHeaders.IfNoneMatch, "*")
                 PutCondition.UNCONDITIONAL -> {}
             }
-            if (etag != null) {
-                header(HttpHeaders.IfMatch, "\"$etag\"")
-            }
         }
         if (!response.status.isSuccess()) {
             throw Exception("PUT failed: ${response.status}")

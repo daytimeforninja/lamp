@@ -146,6 +146,49 @@ class VtodoConverterTest {
         assertEquals(TaskState.CANCELLED, VtodoConverter.vcalendarToTask(cancelled)?.state)
     }
 
+    /**
+     * Cross-platform hash test vectors.
+     * Desktop (Rust) must produce identical hashes for the same inputs.
+     * If this test breaks, update BOTH platforms' test vectors together.
+     */
+    @Test
+    fun `cross-platform hash - minimal task`() {
+        val task = Task(
+            title = "Buy milk",
+            state = TaskState.TODO,
+        )
+        assertEquals(-5987358100177191186L, VtodoConverter.taskContentHash(task))
+    }
+
+    @Test
+    fun `cross-platform hash - full task`() {
+        val task = Task(
+            title = "Review quarterly report",
+            state = TaskState.NEXT,
+            priority = Priority.B,
+            contexts = listOf("@office", "@computer"),
+            scheduled = LocalDate.of(2026, 3, 15),
+            deadline = LocalDate.of(2026, 3, 20),
+            notes = "Check figures in section 3",
+            project = "Q1 Review",
+            waitingFor = "Alice",
+            esc = 40,
+            delegated = LocalDate.of(2026, 3, 10),
+            followUp = LocalDate.of(2026, 3, 18),
+            extraTags = listOf("urgent"),
+            logbookEntries = listOf(
+                LocalDateTime.of(2026, 3, 1, 9, 0, 0),
+            ),
+            clockEntries = listOf(
+                LocalDateTime.of(2026, 3, 14, 10, 0, 0) to LocalDateTime.of(2026, 3, 14, 11, 30, 0),
+            ),
+            dayplanDate = LocalDate.of(2026, 3, 15),
+            dayplanBudget = 80,
+            completed = LocalDateTime.of(2026, 3, 20, 17, 0, 0),
+        )
+        assertEquals(-4056542656988899608L, VtodoConverter.taskContentHash(task))
+    }
+
     @Test
     fun `content hash is deterministic`() {
         val task = Task(

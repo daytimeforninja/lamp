@@ -514,6 +514,68 @@ mod tests {
         assert_eq!(task_content_hash(&task), task_content_hash(&task));
     }
 
+    /// Cross-platform hash test vectors.
+    /// Mobile (Kotlin) must produce identical hashes for the same inputs.
+    /// If this test breaks, update BOTH platforms' test vectors together.
+    #[test]
+    fn cross_platform_hash_minimal() {
+        let task = Task {
+            title: "Buy milk".to_string(),
+            state: TaskState::Todo,
+            priority: None,
+            contexts: vec![],
+            scheduled: None,
+            deadline: None,
+            notes: "".to_string(),
+            project: None,
+            waiting_for: None,
+            esc: None,
+            delegated: None,
+            follow_up: None,
+            recurrence: None,
+            extra_tags: vec![],
+            logbook_entries: vec![],
+            clock_entries: vec![],
+            dayplan_date: None,
+            dayplan_budget: None,
+            completed: None,
+            ..Task::new("unused")
+        };
+        assert_eq!(task_content_hash(&task), 12459385973532360430);
+    }
+
+    #[test]
+    fn cross_platform_hash_full() {
+        let task = Task {
+            title: "Review quarterly report".to_string(),
+            state: TaskState::Next,
+            priority: Some(Priority::B),
+            contexts: vec!["@office".to_string(), "@computer".to_string()],
+            scheduled: Some(NaiveDate::from_ymd_opt(2026, 3, 15).unwrap()),
+            deadline: Some(NaiveDate::from_ymd_opt(2026, 3, 20).unwrap()),
+            notes: "Check figures in section 3".to_string(),
+            project: Some("Q1 Review".to_string()),
+            waiting_for: Some("Alice".to_string()),
+            esc: Some(40),
+            delegated: Some(NaiveDate::from_ymd_opt(2026, 3, 10).unwrap()),
+            follow_up: Some(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+            recurrence: None,
+            extra_tags: vec!["urgent".to_string()],
+            logbook_entries: vec![
+                NaiveDate::from_ymd_opt(2026, 3, 1).unwrap().and_hms_opt(9, 0, 0).unwrap(),
+            ],
+            clock_entries: vec![(
+                NaiveDate::from_ymd_opt(2026, 3, 14).unwrap().and_hms_opt(10, 0, 0).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 3, 14).unwrap().and_hms_opt(11, 30, 0).unwrap(),
+            )],
+            dayplan_date: Some(NaiveDate::from_ymd_opt(2026, 3, 15).unwrap()),
+            dayplan_budget: Some(80),
+            completed: Some(NaiveDate::from_ymd_opt(2026, 3, 20).unwrap().and_hms_opt(17, 0, 0).unwrap()),
+            ..Task::new("unused")
+        };
+        assert_eq!(task_content_hash(&task), 14390201416720652008);
+    }
+
     #[test]
     fn parse_non_lamp_vtodo() {
         let ical = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:abc-123\r\nSUMMARY:External task\r\nSTATUS:NEEDS-ACTION\r\nPRIORITY:5\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";

@@ -308,6 +308,7 @@ object VtodoConverter {
         // Include dayplanDate so confirming/unconfirming a task triggers sync push
         hasher.writeOptionalString(task.dayplanDate?.format(DateTimeFormatter.ISO_LOCAL_DATE))
         hasher.writeOptionalInt(task.dayplanBudget)
+        hasher.writeOptionalString(task.completed?.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
         return hasher.finish()
     }
 

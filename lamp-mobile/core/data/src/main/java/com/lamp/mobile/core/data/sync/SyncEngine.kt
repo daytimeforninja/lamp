@@ -215,37 +215,43 @@ class SyncEngine @Inject constructor(
                     is SyncChange.Changed -> {
                         val remoteTask = VtodoConverter.vcalendarToTask(change.vtodo.icalBody)
                             ?: continue
-                        val remoteWithSync = remoteTask.copy(
-                            syncHref = change.vtodo.href,
-                            syncEtag = change.vtodo.etag,
-                            syncHash = VtodoConverter.taskContentHash(remoteTask),
-                        )
 
                         val localTask = taskRepo.getByHref(change.vtodo.href)
                         if (localTask != null) {
                             // Merge local fields that remote may not have
-                            val merged = remoteWithSync.copy(
+                            val merged = remoteTask.copy(
                                 id = localTask.id,
-                                project = remoteWithSync.project ?: localTask.project,
-                                extraTags = if (remoteWithSync.extraTags.isEmpty()) localTask.extraTags
-                                            else (remoteWithSync.extraTags + localTask.extraTags).distinct(),
-                                logbookEntries = (remoteWithSync.logbookEntries + localTask.logbookEntries).distinct().sorted(),
-                                clockEntries = (remoteWithSync.clockEntries + localTask.clockEntries).distinct(),
+                                syncHref = change.vtodo.href,
+                                syncEtag = change.vtodo.etag,
+                                project = remoteTask.project ?: localTask.project,
+                                extraTags = if (remoteTask.extraTags.isEmpty()) localTask.extraTags
+                                            else (remoteTask.extraTags + localTask.extraTags).distinct(),
+                                logbookEntries = (remoteTask.logbookEntries + localTask.logbookEntries).distinct().sorted(),
+                                clockEntries = (remoteTask.clockEntries + localTask.clockEntries).distinct(),
                             )
-                            // Check if local was modified
+                            // Compute hash AFTER merge so it matches on next sync
+                            val mergedWithHash = merged.copy(
+                                syncHash = VtodoConverter.taskContentHash(merged),
+                            )
+                            // Check if local was modified (null hash = unknown baseline, accept remote)
                             val localHash = VtodoConverter.taskContentHash(localTask)
-                            if (localHash == localTask.syncHash) {
-                                // Local unchanged, take remote (with merged local fields)
-                                taskRepo.save(merged, markDirty = false)
+                            if (localTask.syncHash == null || localHash == localTask.syncHash) {
+                                // Local unchanged (or unknown baseline), take remote
+                                taskRepo.save(mergedWithHash, markDirty = false)
                             } else {
                                 // Both changed: produce conflict for user resolution
                                 conflicts.add(SyncConflict.StateMismatch(
                                     localTask = localTask,
-                                    remoteTask = merged,
+                                    remoteTask = mergedWithHash,
                                 ))
                             }
                         } else {
-                            // New remote task
+                            // New remote task — compute hash after construction
+                            val remoteWithSync = remoteTask.copy(
+                                syncHref = change.vtodo.href,
+                                syncEtag = change.vtodo.etag,
+                                syncHash = VtodoConverter.taskContentHash(remoteTask),
+                            )
                             taskRepo.save(remoteWithSync, markDirty = false)
                         }
                         downloaded++
@@ -255,10 +261,11 @@ class SyncEngine @Inject constructor(
                         if (local != null) {
                             // Local exists but remote deleted — surface as conflict
                             val localHash = VtodoConverter.taskContentHash(local)
-                            if (localHash != local.syncHash) {
+                            if (local.syncHash != null && localHash != local.syncHash) {
                                 // Local was modified, let user decide
                                 conflicts.add(SyncConflict.LocalOnly(localTask = local))
                             } else {
+                                // Unmodified or unknown baseline — accept remote delete
                                 taskRepo.delete(local.id)
                             }
                         }

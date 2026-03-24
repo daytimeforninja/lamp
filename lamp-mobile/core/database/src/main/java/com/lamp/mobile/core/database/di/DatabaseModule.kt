@@ -43,12 +43,20 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Clear stale content hashes — hash function changed (added completed field).
+            // Combined with null-hash-accepts-remote logic, this enables clean first sync.
+            db.execSQL("UPDATE tasks SET syncHash = NULL")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): LampDatabase =
         Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
             .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
-            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
             .enableMultiInstanceInvalidation()
             .build()
 
