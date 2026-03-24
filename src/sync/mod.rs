@@ -534,9 +534,11 @@ impl SyncEngine {
             if let Some(ref href) = task.sync_href {
                 if !seen_hrefs.contains(href) {
                     let local_hash = task_content_hash(task);
-                    let changed = task
-                        .sync_hash
-                        .is_some_and(|h| h != local_hash);
+                    // Push if hash differs OR if no stored hash (first sync with new hash function)
+                    let changed = match task.sync_hash {
+                        Some(h) => h != local_hash,
+                        None => true,
+                    };
 
                     if changed {
                         let ical = task_to_vcalendar(task);
@@ -555,7 +557,27 @@ impl SyncEngine {
                                 result.pulled.push(updated);
                                 result.pushed += 1;
                             }
+                            Err(e) if e.contains("412") => {
+                                // Stale etag — retry unconditionally
+                                log::info!("Retrying push (stale etag): {}", task.title);
+                                match self.client.put_vtodo(href, PutCondition::Unconditional, &ical).await {
+                                    Ok(new_etag) => {
+                                        let mut updated = task.clone();
+                                        updated.sync_hash = Some(local_hash);
+                                        if !new_etag.is_empty() {
+                                            updated.sync_etag = Some(new_etag);
+                                        }
+                                        result.pulled.push(updated);
+                                        result.pushed += 1;
+                                    }
+                                    Err(e2) => {
+                                        log::error!("Failed to push '{}' (retry): {}", task.title, e2);
+                                        result.errors.push(format!("Failed to push {}: {}", task.title, e2));
+                                    }
+                                }
+                            }
                             Err(e) => {
+                                log::error!("Failed to push '{}': {}", task.title, e);
                                 result
                                     .errors
                                     .push(format!("Failed to push {}: {}", task.title, e));
