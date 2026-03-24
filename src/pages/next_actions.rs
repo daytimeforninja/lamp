@@ -19,7 +19,7 @@ pub fn next_actions_view(
         .collect();
 
     if next_tasks.is_empty() {
-        return ui::status_page("go-next-symbolic", &fl!("next-actions-empty"), "Set tasks to NEXT to see them here").upcast();
+        return ui::status_page("pan-end-symbolic", &fl!("next-actions-empty"), "Set tasks to NEXT to see them here").upcast();
     }
 
     // Group by context

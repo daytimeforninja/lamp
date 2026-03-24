@@ -44,7 +44,7 @@ pub fn archive_view(
         } else {
             ("No Results", "Try a different search term")
         };
-        content.append(&ui::status_page("document-open-recent-symbolic", title, desc));
+        content.append(&ui::status_page("find-location-symbolic", title, desc));
 
         return ui::scrolled(&content).upcast();
     }

@@ -348,7 +348,7 @@ fn append_test_row(
         }
     }
 
-    let btn = gtk::Button::from_icon_name("network-transmit-receive-symbolic");
+    let btn = gtk::Button::from_icon_name("network-server-symbolic");
     btn.set_valign(gtk::Align::Center);
     btn.add_css_class("flat");
     {

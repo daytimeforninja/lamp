@@ -231,7 +231,7 @@ fn event_row(event: &CalendarEvent, sender: &Sender) -> gtk::Box {
     time_lbl.set_width_request(56);
     row.append(&time_lbl);
 
-    let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+    let icon = gtk::Image::from_icon_name("view-grid-symbolic");
     icon.set_pixel_size(16);
     row.append(&icon);
 
@@ -241,7 +241,7 @@ fn event_row(event: &CalendarEvent, sender: &Sender) -> gtk::Box {
 
     row.append(&ui::caption(&cal_label));
 
-    row.append(&ui::icon_button_with_signal("document-edit-symbolic", Message::EditEvent(id), sender));
+    row.append(&ui::icon_button_with_signal("edit-copy-symbolic", Message::EditEvent(id), sender));
     row.append(&ui::icon_button_with_signal("edit-delete-symbolic", Message::DeleteEvent(id), sender));
 
     row

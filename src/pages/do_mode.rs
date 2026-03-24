@@ -119,7 +119,7 @@ pub fn do_mode_view(
 
             // Expand/notes button
             let expand_btn = ui::icon_button_with_signal(
-                "accessories-text-editor-symbolic",
+                "edit-paste-symbolic",
                 Message::ToggleTaskExpand(id),
                 sender,
             );

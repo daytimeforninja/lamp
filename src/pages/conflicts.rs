@@ -11,7 +11,7 @@ pub fn conflicts_view(
     sender: &Sender,
 ) -> gtk::Widget {
     if conflicts.is_empty() {
-        return ui::status_page("emblem-ok-symbolic", "No Conflicts", "All synced tasks are consistent").upcast();
+        return ui::status_page("object-select-symbolic", "No Conflicts", "All synced tasks are consistent").upcast();
     }
 
     // Partition conflicts by type

@@ -100,7 +100,7 @@ pub fn month_calendar_view(
     header.append(&month_text);
 
     let next_btn = ui::icon_button_with_signal(
-        "go-next-symbolic",
+        "pan-end-symbolic",
         Message::CalendarNextMonth,
         sender,
     );

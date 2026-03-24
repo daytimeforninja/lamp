@@ -48,7 +48,7 @@ pub fn inbox_view(
     let inbox: Vec<&Task> = tasks.iter().filter(|t| is_inbox_task(t)).collect();
 
     if inbox.is_empty() && imap_emails.is_empty() {
-        content.append(&ui::status_page("mail-folder-inbox-symbolic", &fl!("inbox-empty"), "Add tasks using the input above"));
+        content.append(&ui::status_page("adw-mail-send-symbolic", &fl!("inbox-empty"), "Add tasks using the input above"));
     } else {
         if !inbox.is_empty() {
             let grid = task_grid(inbox.into_iter(), ctx, None, sender);

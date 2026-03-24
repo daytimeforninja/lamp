@@ -40,7 +40,7 @@ pub fn habits_view(
     content.append(&input_row);
 
     if habits.is_empty() {
-        content.append(&ui::status_page("checkbox-checked-symbolic", &fl!("habits-empty"), "Add a daily habit to get started"));
+        content.append(&ui::status_page("object-select-symbolic", &fl!("habits-empty"), "Add a daily habit to get started"));
     } else {
         for habit in habits {
             let row = ui::centered_hbox(8);

@@ -402,6 +402,8 @@ impl Component for Lamp {
         sidebar.set_selection_mode(gtk::SelectionMode::Single);
         sidebar.add_css_class("navigation-sidebar");
 
+        // Build a mapping from row index to page (separators shift indices)
+        let mut row_to_page: Vec<WhatPage> = Vec::new();
         for (i, page) in WhatPage::ALL.iter().enumerate() {
             if WhatPage::SECTION_STARTS.contains(page) && i > 0 {
                 let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
@@ -423,17 +425,23 @@ impl Component for Lamp {
             hbox.append(&label);
             row.set_child(Some(&hbox));
             sidebar.append(&row);
+            row_to_page.push(*page);
         }
 
         {
             let s = sender.input_sender().clone();
-            sidebar.connect_row_selected(move |_, row| {
+            sidebar.connect_row_selected(move |listbox, row| {
                 if let Some(row) = row {
-                    let idx = row.index() as usize;
-                    // Account for separator rows
-                    let pages = WhatPage::ALL;
-                    if idx < pages.len() {
-                        s.emit(Message::NavigateTo(pages[idx]));
+                    // Count only selectable rows (skip separators) up to this one
+                    let mut page_idx = 0;
+                    let mut i = 0;
+                    while let Some(r) = listbox.row_at_index(i) {
+                        if r == *row { break; }
+                        if r.is_selectable() { page_idx += 1; }
+                        i += 1;
+                    }
+                    if page_idx < row_to_page.len() {
+                        s.emit(Message::NavigateTo(row_to_page[page_idx]));
                     }
                 }
             });
@@ -492,7 +500,7 @@ impl Component for Lamp {
         }
         header_bar.pack_end(&new_task_btn);
 
-        let sync_button = ui::icon_button("emblem-synchronizing-symbolic");
+        let sync_button = ui::icon_button("media-playlist-repeat-symbolic");
         sync_button.set_tooltip_text(Some("Sync"));
         {
             let s = sender.input_sender().clone();
@@ -2262,7 +2270,7 @@ impl Component for Lamp {
         // Sync button feedback — spinner while syncing, icon when idle
         match &self.sync_status {
             SyncStatus::Syncing => {
-                widgets.sync_button.set_icon_name("process-working-symbolic");
+                widgets.sync_button.set_icon_name("info-outline-symbolic");
                 widgets.sync_button.set_sensitive(false);
                 // Show "syncing" toast once
                 if widgets.last_sync_toast.as_deref() != Some("syncing") {
@@ -2273,7 +2281,7 @@ impl Component for Lamp {
                 }
             }
             SyncStatus::LastSynced(t) => {
-                widgets.sync_button.set_icon_name("emblem-synchronizing-symbolic");
+                widgets.sync_button.set_icon_name("media-playlist-repeat-symbolic");
                 widgets.sync_button.set_sensitive(true);
                 let key = format!("done:{}", t);
                 if widgets.last_sync_toast.as_deref() != Some(&key) {
@@ -2284,7 +2292,7 @@ impl Component for Lamp {
                 }
             }
             SyncStatus::Error(e) => {
-                widgets.sync_button.set_icon_name("dialog-warning-symbolic");
+                widgets.sync_button.set_icon_name("dialog-error-symbolic");
                 widgets.sync_button.set_sensitive(true);
                 let key = format!("err:{}", e);
                 if widgets.last_sync_toast.as_deref() != Some(&key) {
@@ -2295,7 +2303,7 @@ impl Component for Lamp {
                 }
             }
             SyncStatus::Idle => {
-                widgets.sync_button.set_icon_name("emblem-synchronizing-symbolic");
+                widgets.sync_button.set_icon_name("media-playlist-repeat-symbolic");
                 widgets.sync_button.set_sensitive(true);
             }
         }

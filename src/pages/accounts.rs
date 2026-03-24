@@ -112,7 +112,7 @@ fn account_row(
             });
         }
         url_row.append(&url_entry);
-        url_row.append(&ui::icon_button_with_signal("web-browser-symbolic", Message::OpenAccountUrl(index), sender));
+        url_row.append(&ui::icon_button_with_signal("adw-external-link-symbolic", Message::OpenAccountUrl(index), sender));
         detail.append(&url_row);
 
         // Notes
