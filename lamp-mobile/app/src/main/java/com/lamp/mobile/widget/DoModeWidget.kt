@@ -10,12 +10,13 @@ import android.content.SharedPreferences
 import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
-import androidx.room.Room
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 import com.lamp.mobile.R
 import com.lamp.mobile.core.database.LampDatabase
 import com.lamp.mobile.core.database.converter.EntityMappers
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -23,6 +24,12 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+interface WidgetDatabaseEntryPoint {
+    fun database(): LampDatabase
+}
 
 class DoModeWidget : AppWidgetProvider() {
 
@@ -36,9 +43,6 @@ class DoModeWidget : AppWidgetProvider() {
         private const val KEY_TIMER_START = "timer_start"
         private const val KEY_TIMER_ELAPSED_BASE = "timer_elapsed_base"
         private const val KEY_SELECTED_INDEX = "selected_index"
-
-        @Volatile
-        private var dbInstance: LampDatabase? = null
 
         fun refreshAll(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
@@ -56,43 +60,11 @@ class DoModeWidget : AppWidgetProvider() {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         private fun getDb(context: Context): LampDatabase {
-            return dbInstance ?: synchronized(this) {
-                dbInstance ?: buildDb(context.applicationContext).also { dbInstance = it }
-            }
-        }
-
-        private fun buildDb(context: Context): LampDatabase {
-            val migration5to6 = object : Migration(5, 6) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    db.execSQL("ALTER TABLE tasks ADD COLUMN dayplanDate TEXT")
-                }
-            }
-            val migration6to7 = object : Migration(6, 7) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    db.execSQL("ALTER TABLE contacts ADD COLUMN groups TEXT NOT NULL DEFAULT ''")
-                    db.execSQL("UPDATE contacts SET groups = category WHERE category IS NOT NULL AND category != ''")
-                }
-            }
-            val migration7to8 = object : Migration(7, 8) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    db.execSQL("ALTER TABLE tasks ADD COLUMN clockEntries TEXT NOT NULL DEFAULT '[]'")
-                }
-            }
-            val migration8to9 = object : Migration(8, 9) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    db.execSQL("ALTER TABLE tasks ADD COLUMN dayplanBudget INTEGER")
-                }
-            }
-            val migration9to10 = object : Migration(9, 10) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    db.execSQL("UPDATE tasks SET syncHash = NULL")
-                }
-            }
-            return Room.databaseBuilder(context, LampDatabase::class.java, "lamp.db")
-                .fallbackToDestructiveMigrationFrom(1, 2, 3, 4)
-                .addMigrations(migration5to6, migration6to7, migration7to8, migration8to9, migration9to10)
-                .enableMultiInstanceInvalidation()
-                .build()
+            val entryPoint = EntryPointAccessors.fromApplication(
+                context.applicationContext,
+                WidgetDatabaseEntryPoint::class.java,
+            )
+            return entryPoint.database()
         }
     }
 

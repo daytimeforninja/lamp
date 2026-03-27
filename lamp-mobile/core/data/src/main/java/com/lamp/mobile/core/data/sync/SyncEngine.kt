@@ -182,9 +182,12 @@ class SyncEngine @Inject constructor(
             val deletedTasks = taskRepo.getDeleted()
             for ((id, syncHref, syncEtag) in deletedTasks) {
                 if (syncHref != null && syncEtag != null) {
-                    client.deleteVtodo(syncHref, syncEtag).getOrNull()
+                    val deleteResult = client.deleteVtodo(syncHref, syncEtag)
+                    if (deleteResult.isFailure) {
+                        Log.e("LampSync", "DELETE failed for $syncHref, will retry next sync")
+                        continue
+                    }
                 }
-                // Actually delete locally after remote delete
                 taskRepo.delete(java.util.UUID.fromString(id))
                 deleted++
             }
