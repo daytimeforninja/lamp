@@ -4,6 +4,35 @@ This document specifies the sync model used by Lamp's desktop (Rust) and mobile
 (Kotlin/Android) clients. It serves as a reference for the formally verified
 sync engine planned in `verified-sync/`.
 
+## Theoretical Model
+
+Lamp's sync is **optimistic replication** (Saito & Shapiro, 2005) with hybrid
+conflict resolution:
+
+- **Set-valued fields** (logbook, clock_entries, extra_tags) use **G-Set CRDT**
+  semantics: union-merge is commutative, associative, and idempotent —
+  conflict-free by construction.
+- **Scalar fields** (title, state, priority, etc.) use **last-writer-wins
+  registers** with the server as the tiebreak authority. When both sides modify
+  a scalar, the remote (server) version wins silently. If the local side
+  detects the conflict via hash comparison, it escalates to the user.
+- **Change detection** uses content hashing (FNV-1a), similar to rsync or
+  CouchDB revision trees, but at the record level rather than block level.
+- **Transport** is CalDAV (RFC 4791) with sync-collection (RFC 6578) for
+  incremental pull and ETags for optimistic concurrency on push.
+
+This hybrid is structurally similar to the models verified in Kleppmann et al.'s
+crdt-isabelle (OOPSLA 2017), which proved strong eventual consistency for
+OR-Sets and registers under the same union-for-sets, LWW-for-scalars pattern.
+
+### References
+
+- Saito & Shapiro, "Optimistic Replication" (ACM Computing Surveys, 2005)
+- Kleppmann et al., "A Conflict-Free Replicated JSON Datatype" (2017) —
+  crdt-isabelle proofs: github.com/trvedata/crdt-isabelle
+- Shapiro et al., "Conflict-Free Replicated Data Types" (2011) — G-Set, LWW
+- RFC 4791 (CalDAV), RFC 6578 (sync-collection), RFC 5545 (iCalendar)
+
 ## Overview
 
 Lamp syncs tasks between devices via a CalDAV server. Each client maintains a
@@ -30,27 +59,27 @@ The unit of sync. Each task has content fields and sync metadata:
 
 **Content fields** (included in hash):
 
-| Field          | Type                  | Notes                              |
-|----------------|-----------------------|------------------------------------|
-| title          | String                |                                    |
-| state          | TODO/NEXT/WAITING/SOMEDAY/DONE/CANCELLED | GTD state machine    |
-| priority       | Option<A/B/C>         | Org-mode priorities                |
-| contexts       | List<String>          | GTD contexts (@home, @office, ...) |
-| scheduled      | Option<Date>          |                                    |
-| deadline       | Option<Date>          |                                    |
-| notes          | String                |                                    |
-| project        | Option<String>        |                                    |
-| waiting_for    | Option<String>        |                                    |
-| esc            | Option<u32>           | Energy/spoon cost (5-100)          |
-| delegated      | Option<Date>          |                                    |
-| follow_up      | Option<Date>          |                                    |
-| recurrence     | Option<Recurrence>    |                                    |
-| extra_tags     | List<String>          | Non-context tags                   |
-| logbook        | List<DateTime>        | Completion timestamps (habits)     |
-| clock_entries  | List<(DateTime,DateTime)> | Work timer sessions            |
-| dayplan_date   | Option<Date>          |                                    |
-| dayplan_budget | Option<u32>           | Spoon budget (first task only)     |
-| completed      | Option<DateTime>      |                                    |
+| Field          | Type                  | Merge strategy | Notes                    |
+|----------------|-----------------------|----------------|--------------------------|
+| title          | String                | LWW (remote)   |                          |
+| state          | Enum                  | LWW (remote)   | TODO/NEXT/WAITING/SOMEDAY/DONE/CANCELLED |
+| priority       | Option<A/B/C>         | LWW (remote)   | Org-mode priorities      |
+| contexts       | List<String>          | LWW (remote)   | GTD contexts             |
+| scheduled      | Option<Date>          | LWW (remote)   |                          |
+| deadline       | Option<Date>          | LWW (remote)   |                          |
+| notes          | String                | LWW (remote)   |                          |
+| project        | Option<String>        | Remote ?? local | Preserved if remote null |
+| waiting_for    | Option<String>        | LWW (remote)   |                          |
+| esc            | Option<u32>           | LWW (remote)   | Energy/spoon cost (5-100)|
+| delegated      | Option<Date>          | LWW (remote)   |                          |
+| follow_up      | Option<Date>          | LWW (remote)   |                          |
+| recurrence     | Option<Recurrence>    | LWW (remote)   |                          |
+| extra_tags     | List<String>          | G-Set union    | Non-context tags         |
+| logbook        | List<DateTime>        | G-Set union    | Completion timestamps    |
+| clock_entries  | List<(DateTime,DateTime)> | G-Set union | Work timer sessions     |
+| dayplan_date   | Option<Date>          | LWW (remote)   |                          |
+| dayplan_budget | Option<u32>           | LWW (remote)   | First task only          |
+| completed      | Option<DateTime>      | LWW (remote)   |                          |
 
 **Sync metadata** (not hashed):
 
@@ -99,6 +128,19 @@ Fields are written in this order:
 
 Cross-platform test vectors exist in both codebases to prevent drift.
 
+## System Invariant
+
+The properties in this document depend on the following invariant maintained by
+the application layer (outside the sync engine):
+
+> **I1: Dirty flag consistency.** Every local content modification to a task
+> sets `sync_dirty = true`. A task with `sync_dirty = false` has not been
+> modified since its `sync_hash` was last computed.
+
+This invariant is enforced by the repository layer (`save(task, markDirty=true)`
+is the default). The sync engine assumes I1 but cannot verify it — the Lean
+proof takes it as an axiom about the I/O boundary.
+
 ## Sync Algorithm
 
 A sync cycle has three phases executed in order: **push**, **pull**, **reconstruct**.
@@ -107,7 +149,8 @@ A sync cycle has three phases executed in order: **push**, **pull**, **reconstru
 
 Push runs first so that local edits reach the server before we pull. This
 prevents the common case of a local edit being immediately overwritten by a
-stale remote version.
+stale remote version. Combined with I1, this ensures that all locally modified
+tasks are on the server before pull processes any remote deletes.
 
 #### 1a. Push dirty tasks
 
@@ -125,7 +168,7 @@ else:
     PUT sync_href unconditionally (no If-Match)
 
 on success:
-    sync_hash  = hash(task)
+    sync_hash  = hash(task)    # see note on budget stamping below
     sync_etag  = response ETag
     sync_href  = href
     sync_dirty = false
@@ -137,7 +180,13 @@ on failure:
 **Dayplan budget stamping** (before push): The first dirty task with
 `dayplan_date == today` gets `dayplan_budget = plan.spoon_budget`. All other
 dayplan tasks get `dayplan_budget = null`. This encodes the budget once per plan
-to save space.
+to save space. The stamped version is serialized to the VTODO for push, but the
+hash is computed from the **un-stamped** local task. This means the stored
+`sync_hash` does not match the content on the server. The mismatch is corrected
+on the subsequent pull, which receives the stamped content, merges it, and
+stores the correct hash. This is a known asymmetry, not a bug — but it means
+P4 (hash stability) only holds after the pull phase completes, not immediately
+after push.
 
 #### 1b. Push deletes
 
@@ -246,11 +295,12 @@ After pull, derived data structures are rebuilt from the task collection:
 
 ## Merge Algorithm
 
-When a remote change arrives for an existing local task, fields are merged:
+When a remote change arrives for an existing local task, fields are merged
+according to their strategy (see Data Model table):
 
 ```
 merge(local, remote) -> merged:
-    # Start from remote (server-authoritative for content fields)
+    # Scalar fields: LWW with remote as winner
     merged = remote
 
     # Preserve local identity
@@ -259,22 +309,21 @@ merge(local, remote) -> merged:
     # Project: remote wins if present, otherwise keep local
     merged.project = remote.project ?? local.project
 
-    # Tags: union if remote has any, otherwise keep local
+    # Set-valued fields: G-Set union (CRDT)
     merged.extra_tags =
         if remote.extra_tags is empty: local.extra_tags
         else: deduplicate(remote.extra_tags + local.extra_tags)
-
-    # Logbook: always union (both devices' completions matter)
     merged.logbook = deduplicate(sort(remote.logbook + local.logbook))
-
-    # Clock: always union (both devices' work sessions matter)
     merged.clock_entries = deduplicate(remote.clock + local.clock)
 ```
 
-**Desktop additionally** performs a three-way merge when the base (sync_hash
-baseline) is available, using `merge_local_fields()`. The merge is
-server-authoritative for scalar fields (title, state, priority, etc.) and
-union-based for collection fields (logbook, clock, tags).
+**Target semantics for verified engine:** The above two-way merge (mobile's
+current implementation) is the canonical specification. Desktop currently
+performs a three-way merge with the base state when available
+(`merge_local_fields()` in merge.rs), which is strictly more precise for scalar
+fields but converges to the same result for set-valued fields. The verified
+engine should implement two-way merge initially and optionally extend to
+three-way as a refinement.
 
 ## Conflict Types
 
@@ -283,6 +332,12 @@ union-based for collection fields (logbook, clock, tags).
 | StateMismatch | Local hash != sync_hash AND remote changed      | User picks local/remote  |
 | LocalOnly     | Remote deleted but local was modified            | User picks keep/delete   |
 | RemoteOnly    | Remote task exists with no local match (desktop) | Auto-import or user pick |
+
+**Note on conflict resolution and P6:** When a conflict is escalated to the
+user and they pick one side, the other side's set-valued fields (logbook, clock)
+are discarded. P6 (logbook/clock preservation) holds only on the **non-conflict
+merge path**. A future improvement would be to always union set-valued fields
+even during conflict resolution, preserving P6 unconditionally.
 
 ## Wire Format
 
@@ -324,7 +379,14 @@ properties:
 | Done task handling     | Skip pulling completed tasks | Pull all tasks               |
 | Delete on complete     | DELETE from server on DONE   | Keep on server               |
 
-These differences are candidates for unification in the verified sync engine.
+**Done-task delete asymmetry:** When desktop completes a task, it DELETEs the
+VTODO from the server. Mobile then sees a `SyncChange.Deleted` for a task it
+may still have locally. If mobile had modified the task before the delete
+arrived (e.g., added a note), the delete handler checks the hash and escalates
+to a conflict. If mobile had not modified it, the task is silently deleted.
+This is correct behavior per P3, but surprising. The verified engine should
+adopt a single policy — the recommendation is to keep completed tasks on the
+server (mobile's current behavior) and let each client filter locally.
 
 ## Properties to Prove
 
@@ -334,36 +396,53 @@ sync algorithm:
 ### P1: Quiescence
 
 If no side has local modifications (`sync_dirty = false` for all tasks, no
-pending deletes), a sync cycle produces no actions (no PUTs, no DELETEs, no
-conflicts, no database writes).
+pending deletes) **and the remote state is unchanged since the last sync
+token**, a sync cycle produces no actions (no PUTs, no DELETEs, no conflicts,
+no database writes).
 
 ### P2: Convergence
 
 After applying all actions from a sync cycle, a second immediate sync cycle
-produces no actions. The system reaches a fixed point in at most two rounds.
+(with no intervening remote changes from other devices) produces no actions.
+The system reaches a fixed point in at most two rounds. The two-round bound
+accounts for the push-side hash asymmetry from dayplan budget stamping: round 1
+pushes and pulls (correcting the hash), round 2 confirms stability.
 
 ### P3: No silent data loss
 
+**Precondition:** I1 (dirty flag consistency) holds.
+
 A task that has been locally modified (`sync_dirty = true` OR `hash(task) !=
 sync_hash`) is never deleted or overwritten without either:
-- Being successfully pushed to the server first, OR
+- Being successfully pushed to the server first (guaranteed by push-before-pull
+  ordering combined with I1: dirty tasks push before pull processes deletes), OR
 - Producing a conflict for user resolution
 
 ### P4: Hash stability
 
 `hash(merge(local, remote))` stored as `sync_hash` equals `hash(task)` on the
-next sync cycle (assuming no local edits). This is the "hash after merge"
-invariant that prevents false conflicts.
+next sync cycle (assuming no local edits between cycles). This is the "hash
+after merge" invariant that prevents false conflicts.
+
+**Caveat:** P4 does not hold for the push-side hash immediately after Phase 1,
+due to dayplan budget stamping (see Phase 1a notes). It holds after the
+complete push+pull cycle.
 
 ### P5: Merge determinism
 
 `merge(local, remote)` is a pure function: same inputs always produce the same
 output, regardless of platform or invocation order.
 
-### P6: Logbook/clock preservation
+### P6: Logbook/clock preservation (non-conflict path)
 
-For any sync cycle, the logbook and clock entries in the result are a superset
-of the union of local and remote entries. No work tracking data is ever lost.
+On the merge path (no conflict escalation), the logbook and clock entries in
+the merged result are a superset of the union of local and remote entries. No
+work tracking data is lost during automatic merge.
+
+**Limitation:** When a conflict is escalated to the user and they choose one
+side, the other side's logbook/clock entries are discarded. A stronger version
+of P6 that holds unconditionally would require always unioning set-valued
+fields, even during conflict resolution.
 
 ### P7: Idempotent pull
 
